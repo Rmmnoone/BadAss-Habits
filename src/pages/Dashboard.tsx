@@ -1,11 +1,12 @@
 // ==========================
-// Version 10 — src/pages/Dashboard.tsx
-// - Shows reminder pill in Today list
-// - Schedules zero-cost reminders while app is open (Notification API)
-//   * calls useReminderScheduler()
+// Version 12 — src/pages/Dashboard.tsx
+// - Moves Notifications control to top-left under avatar (NOT inside Today card)
+// - Adds DEBUG logs + optional on-screen debug panel (?debug=1)
+// - Explains blocked state (Chrome site settings controls it)
+// - Keeps v11 behavior otherwise
 // ==========================
 import React, { useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import { useAuth } from "../auth/AuthProvider";
 import Scene from "../components/Scene";
 import { db } from "../firebase/client";
@@ -108,9 +109,27 @@ function ReminderPill({ time }: { time: string }) {
   );
 }
 
+function permissionLabel(p: NotificationPermission | "unsupported") {
+  if (p === "granted") return "ON";
+  if (p === "denied") return "BLOCKED";
+  if (p === "default") return "OFF";
+  return "UNSUPPORTED";
+}
+
+function permissionHelp(p: NotificationPermission | "unsupported") {
+  if (p === "granted") return "Enabled. You’ll get nudges while the app is open.";
+  if (p === "default") return "Click to enable.";
+  if (p === "denied")
+    return "Blocked by browser. You must re-enable in Chrome Site settings (Notifications).";
+  return "Notifications not supported here.";
+}
+
 export default function Dashboard() {
   const { user, logout } = useAuth();
   const uid = user?.uid ?? null;
+
+  const loc = useLocation();
+  const debugOn = useMemo(() => new URLSearchParams(loc.search).get("debug") === "1", [loc.search]);
 
   // Today list (already filters due today)
   const { dateKey, dueItems, items, loading } = useToday(uid);
@@ -126,12 +145,79 @@ export default function Dashboard() {
   const [consistency7d, setConsistency7d] = useState<string>("—");
   // =============================
 
+  const notifSupported = typeof window !== "undefined" && "Notification" in window;
+  const secureContext = typeof window !== "undefined" ? window.isSecureContext : false;
+
   // Enable zero-cost reminders while app is open
-  useReminderScheduler({
+  const { permission } = useReminderScheduler({
     enabled: Boolean(uid),
     dateKey,
     dueItems,
   });
+
+  const notifStatus: NotificationPermission | "unsupported" = notifSupported
+    ? (permission ?? Notification.permission)
+    : "unsupported";
+
+  // Local debug state snapshot
+  const [debugSnap, setDebugSnap] = useState<Record<string, any>>({});
+
+  function readDebugSnapshot() {
+    if (typeof window === "undefined") return {};
+    const navAny: any = navigator as any;
+    return {
+      time: new Date().toISOString(),
+      notifSupported,
+      notifPermission: notifSupported ? Notification.permission : "unsupported",
+      hookPermission: permission ?? null,
+      secureContext,
+      protocol: window.location?.protocol,
+      hostname: window.location?.hostname,
+      userAgent: navigator.userAgent,
+      visibilityState: document.visibilityState,
+      displayModeStandalone:
+        (window.matchMedia && window.matchMedia("(display-mode: standalone)").matches) || false,
+      navigatorStandalone: Boolean(navAny.standalone),
+    };
+  }
+
+  // Debug: log on mount and poll permission changes
+  useEffect(() => {
+    if (!debugOn) return;
+
+    console.log("[Dashboard][DEBUG] mounted");
+    console.log("[Dashboard][DEBUG] initial snapshot:", readDebugSnapshot());
+
+    const id = window.setInterval(() => {
+      const snap = readDebugSnapshot();
+      console.log("[Dashboard][DEBUG] poll snapshot:", snap);
+      setDebugSnap(snap);
+    }, 2000);
+
+    return () => window.clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [debugOn]);
+
+  async function enableNotificationsClick() {
+    console.log("[Dashboard] EnableNotifications clicked");
+    console.log("[Dashboard] before request:", readDebugSnapshot());
+
+    if (!notifSupported) {
+      console.log("[Dashboard] Notification API unsupported");
+      return;
+    }
+
+    try {
+      const p = await Notification.requestPermission();
+      console.log("[Dashboard] requestPermission result:", p);
+      console.log("[Dashboard] after request:", readDebugSnapshot());
+
+      // In Chrome, if permission is "denied", requestPermission won't prompt again.
+      // User must change it in browser site settings.
+    } catch (e) {
+      console.log("[Dashboard] requestPermission error:", e);
+    }
+  }
 
   // Existing simple stats (today snapshot)
   const stats = useMemo(() => {
@@ -234,7 +320,8 @@ export default function Dashboard() {
         }
 
         setBestCurrentStreak(best);
-      } catch {
+      } catch (e) {
+        console.log("[Dashboard] insights error:", e);
         if (!cancelled) {
           setBestCurrentStreak(null);
           setConsistency7d("—");
@@ -255,7 +342,7 @@ export default function Dashboard() {
     <Scene className="min-h-screen relative overflow-hidden" contentClassName="relative p-4 sm:p-6">
       <div className="max-w-5xl mx-auto">
         {/* Header */}
-        <div className="flex items-center justify-between gap-3 mb-6">
+        <div className="flex items-center justify-between gap-3 mb-4">
           <div className="flex items-center gap-3">
             <div
               className="h-10 w-10 rounded-2xl border border-white/14
@@ -315,6 +402,64 @@ export default function Dashboard() {
             </button>
           </div>
         </div>
+
+        {/* Notifications control under avatar (top-left) */}
+        <div className="mb-6 flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <div className="text-xs font-semibold text-white/75">Notifications</div>
+            <div className="mt-1 text-xs text-white/50">
+              {permissionHelp(notifStatus)}
+              {notifStatus === "denied" ? (
+                <span className="text-white/60">
+                  {" "}
+                  (Chrome: click the 🔒 icon → Site settings → Notifications → Allow)
+                </span>
+              ) : null}
+            </div>
+          </div>
+
+          {/* Switch-like button */}
+          <button
+            type="button"
+            onClick={enableNotificationsClick}
+            disabled={!notifSupported || notifStatus === "granted"}
+            className={`relative inline-flex h-9 w-24 items-center rounded-full border transition
+              ${
+                notifStatus === "granted"
+                  ? "border-white/20 bg-white/[0.16]"
+                  : "border-white/14 bg-white/[0.08] hover:bg-white/[0.12]"
+              }
+              disabled:opacity-60`}
+            aria-label="Enable notifications"
+            title={!notifSupported ? "Notifications unsupported" : undefined}
+          >
+            <span
+              className={`absolute left-1 top-1 h-7 w-7 rounded-full transition
+                ${notifStatus === "granted" ? "translate-x-[56px] bg-white/80" : "translate-x-0 bg-white/55"}`}
+            />
+            <span className="w-full text-center text-[11px] font-semibold text-white/80">
+              {permissionLabel(notifStatus)}
+            </span>
+          </button>
+        </div>
+
+        {/* Debug panel */}
+        {debugOn ? (
+          <div className="mb-6 rounded-2xl border border-white/14 bg-white/[0.06] p-4 text-xs text-white/75 backdrop-blur-2xl">
+            <div className="font-semibold text-white/85">DEBUG</div>
+            <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {Object.entries(debugSnap).map(([k, v]) => (
+                <div key={k} className="rounded-xl border border-white/10 bg-black/10 p-3">
+                  <div className="text-white/55">{k}</div>
+                  <div className="mt-1 break-all text-white/85">{String(v)}</div>
+                </div>
+              ))}
+            </div>
+            <div className="mt-3 text-white/45">
+              Tip: open DevTools Console and search for <span className="text-white/70">[Dashboard]</span>.
+            </div>
+          </div>
+        ) : null}
 
         {/* Top grid */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 sm:gap-5">
@@ -378,7 +523,7 @@ export default function Dashboard() {
               )}
 
               <div className="mt-4 text-xs text-white/45">
-                Tip: If you allow notifications, the app will nudge you at the reminder time while it’s open.
+                Tip: Reminders are “best-effort” and only work while the app tab/window is open (MVP).
               </div>
             </DarkCard>
           </div>
@@ -387,11 +532,14 @@ export default function Dashboard() {
             <DarkCard title="Quick stats" subtitle="Snapshot (Today + last 7 days)">
               <div className="grid grid-cols-2 gap-3">
                 {[
-                  { label: "Active habits", value: String(stats.activeHabitsCount) },
-                  { label: "Due today", value: String(stats.dueCount) },
-                  { label: "Today done", value: String(stats.doneCount) },
+                  { label: "Active habits", value: String(items.length) },
+                  { label: "Due today", value: String(dueItems.length) },
+                  { label: "Today done", value: String(dueItems.filter((x) => x.done).length) },
                   { label: "7d consistency", value: insightsLoading ? "…" : consistency7d },
-                  { label: "Best streak", value: insightsLoading ? "…" : (bestCurrentStreak == null ? "—" : String(bestCurrentStreak)) },
+                  {
+                    label: "Best streak",
+                    value: insightsLoading ? "…" : bestCurrentStreak == null ? "—" : String(bestCurrentStreak),
+                  },
                   { label: "Today rate", value: stats.todayConsistency },
                 ].map((x) => (
                   <div
@@ -479,5 +627,5 @@ export default function Dashboard() {
 }
 
 // ==========================
-// End of Version 10 — src/pages/Dashboard.tsx
+// End of Version 12 — src/pages/Dashboard.tsx
 // ==========================

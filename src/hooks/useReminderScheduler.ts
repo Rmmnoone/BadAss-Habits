@@ -1,13 +1,12 @@
 // ==========================
-// Version 1 — src/hooks/useReminderScheduler.ts
+// Version 2 — src/hooks/useReminderScheduler.ts
 // - Zero-cost reminders while app is open
-// - Uses Notification API (best-effort):
-//   * asks permission once (you can move this to a Settings screen later)
-//   * checks every 20s
-//   * fires at the habit reminder time if due + not done
-//   * prevents repeat fires using sessionStorage per day
+// - Does NOT auto-request notification permission anymore
+//   * permission request should be triggered by a user gesture (Dashboard button)
+// - Checks every 20s and fires at reminder minute if due + not done
+// - Prevents repeat fires using sessionStorage per day
 // ==========================
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { TodayItem } from "./useToday";
 
 function timeToMinutes(t: string): number {
@@ -42,25 +41,24 @@ export function useReminderScheduler(args: {
     return "Notification" in window ? Notification.permission : "denied";
   });
 
-  const askedRef = useRef(false);
-
   const candidates = useMemo(() => {
     // only habits that have reminders enabled AND are due AND not done
     return dueItems.filter((h) => h.reminderEnabled && h.due && !h.done);
   }, [dueItems]);
 
+  // Keep permission state updated (in case user enables it via button / browser UI)
   useEffect(() => {
     if (!enabled) return;
     if (typeof window === "undefined") return;
     if (!("Notification" in window)) return;
 
-    // Ask permission once per session (MVP behavior)
-    if (!askedRef.current && Notification.permission === "default") {
-      askedRef.current = true;
-      Notification.requestPermission().then((p) => setPermission(p));
-    } else {
+    setPermission(Notification.permission);
+
+    const id = window.setInterval(() => {
       setPermission(Notification.permission);
-    }
+    }, 3_000);
+
+    return () => window.clearInterval(id);
   }, [enabled]);
 
   useEffect(() => {
@@ -76,7 +74,7 @@ export function useReminderScheduler(args: {
       for (const h of candidates) {
         const mTarget = timeToMinutes(h.reminderTime);
 
-        // Fire rule (MVP): if current minute matches target minute
+        // MVP rule: fire when minute matches
         if (mNow !== mTarget) continue;
 
         const key = `reminderFired:${dateKey}:${h.id}`;
@@ -87,14 +85,15 @@ export function useReminderScheduler(args: {
       }
     };
 
-    // tick fast enough to catch minute boundaries even if tab is sluggish
     const id = window.setInterval(tick, 20_000);
     tick();
 
     return () => window.clearInterval(id);
   }, [enabled, permission, candidates, dateKey]);
+
+  return { permission };
 }
 
 // ==========================
-// End of Version 1 — src/hooks/useReminderScheduler.ts
+// End of Version 2 — src/hooks/useReminderScheduler.ts
 // ==========================

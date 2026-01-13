@@ -1,14 +1,15 @@
 // ==========================
-// Version 2 — src/hooks/useToday.ts
-// - Adds reminder fields for Today items
-// - Sorts due items by reminder time (enabled first), then name
-// - Still reads schedule/reminders from parent habit doc
+// Version 3 — src/hooks/useToday.ts
+// - Refactor: removes duplicated due logic (uses utils/eligibility.ts)
+// - Keeps reminder fields + sorting behavior
+// - Optional pre-start support via habit.createdAt -> minDateKey
 // ==========================
 import { useEffect, useMemo, useState } from "react";
 import { onSnapshot, type FirestoreError } from "firebase/firestore";
 import { db } from "../firebase/client";
 import { dayHabitsCollection } from "../firebase/checkins";
-import { todayKey, weekday1to7 } from "../utils/dateKey";
+import { dateKeyFromDate, todayKey } from "../utils/dateKey";
+import { isDueOnDateKey } from "../utils/eligibility";
 import { useHabits } from "./useHabits";
 
 export type TodayItem = {
@@ -17,24 +18,21 @@ export type TodayItem = {
   due: boolean;
   done: boolean;
 
-  // NEW
   reminderEnabled: boolean;
   reminderTime: string; // "HH:mm" (defaults to "09:00")
 };
-
-function isDueToday(h: any, weekday: number): boolean {
-  const type = h?.schedule?.type ?? "daily";
-  if (type === "daily") return true;
-
-  const days: number[] = h?.schedule?.daysOfWeek ?? [];
-  return days.includes(weekday);
-}
 
 function timeToMinutes(t: string): number {
   const [hh, mm] = (t || "09:00").split(":");
   const h = Math.max(0, Math.min(23, Number(hh) || 0));
   const m = Math.max(0, Math.min(59, Number(mm) || 0));
   return h * 60 + m;
+}
+
+function minDateKeyFromHabit(h: any): string | null {
+  const ts = h?.createdAt;
+  const d: Date | null = ts && typeof ts.toDate === "function" ? ts.toDate() : null;
+  return d ? dateKeyFromDate(d) : null;
 }
 
 export function useToday(uid?: string | null) {
@@ -44,7 +42,6 @@ export function useToday(uid?: string | null) {
   const [loadingCheckins, setLoadingCheckins] = useState(true);
 
   const dateKey = useMemo(() => todayKey(), []);
-  const weekday = useMemo(() => weekday1to7(new Date()), []);
 
   useEffect(() => {
     if (!uid) {
@@ -74,7 +71,14 @@ export function useToday(uid?: string | null) {
 
   const items: TodayItem[] = useMemo(() => {
     return (active as any[]).map((h) => {
-      const due = isDueToday(h, weekday);
+      const minDateKey = minDateKeyFromHabit(h);
+
+      const due = isDueOnDateKey({
+        habit: h,
+        dateKey,
+        minDateKey,
+      });
+
       const done = doneSet.has(h.id);
 
       const reminderEnabled = Boolean(h?.reminders?.enabled);
@@ -89,7 +93,7 @@ export function useToday(uid?: string | null) {
         reminderTime,
       };
     });
-  }, [active, weekday, doneSet]);
+  }, [active, dateKey, doneSet]);
 
   const dueItems = useMemo(() => {
     const due = items.filter((x) => x.due);
@@ -115,5 +119,5 @@ export function useToday(uid?: string | null) {
 }
 
 // ==========================
-// End of Version 2 — src/hooks/useToday.ts
+// End of Version 3 — src/hooks/useToday.ts
 // ==========================

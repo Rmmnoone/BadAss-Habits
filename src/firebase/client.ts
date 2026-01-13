@@ -1,7 +1,8 @@
 // ==========================
-// Version 1 — src/firebase/client.ts
+// Version 3 — src/firebase/client.ts
 // - Firebase client init (Auth + Firestore)
 // - Reads config from .env.local (Vite)
+// - Exports `app` for FCM Messaging usage
 // ==========================
 import { initializeApp } from "firebase/app";
 import { getAuth } from "firebase/auth";
@@ -16,7 +17,12 @@ const firebaseConfig = {
   appId: import.meta.env.VITE_FIREBASE_APP_ID as string,
 };
 
-const app = initializeApp(firebaseConfig);
+// ✅ IMPORTANT: export app so Messaging can use the same instance
+export const app = initializeApp(firebaseConfig);
 
 export const auth = getAuth(app);
 export const db = getFirestore(app);
+
+// ==========================
+// End of Version 3 — src/firebase/client.ts
+// ==========================

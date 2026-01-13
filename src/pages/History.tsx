@@ -1,14 +1,10 @@
 // ==========================
-// Version 5 — src/pages/History.tsx
-// - Phase 5.3: Heatmap visual overhaul to match the approved design (single month only)
-// - Removes next-month preview entirely
-// - Adds premium "glass + vignette + inner border" styling inside the Heatmap card
-// - Strong neon glow for done/intense days (pink/fuchsia bloom)
-// - Keeps BOTH modes:
-//   * Overall: intensity by (done / due) across ALL active habits for that day
-//   * Single habit: only that habit; non-due days are disabled
-// - Still read-only (no toggling here)
-// - Keeps existing cards: Overall + Per-habit streaks + Daily breakdown
+// Version 6 — src/pages/History.tsx
+// - Refactor: uses utils/eligibility.ts for due logic (single source of truth)
+// - Refactor: uses updated utils/history.ts (v2 signatures)
+// - Removes weekdayMapForKeys + isDueOnWeekday dependencies
+// - Uses dateKeyFromDate from utils/dateKey.ts (no duplicate helper here)
+// - Keeps heatmap design + both modes (overall / single habit), read-only
 // ==========================
 import React, { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
@@ -19,9 +15,9 @@ import { useHistory } from "../hooks/useHistory";
 import {
   computeHabitWindowStats,
   computeOverallWindowStats,
-  weekdayMapForKeys,
-  isDueOnWeekday,
 } from "../utils/history";
+import { dateKeyFromDate, weekday1to7 } from "../utils/dateKey";
+import { isDueOnDateKey } from "../utils/eligibility";
 
 function initials(email?: string | null) {
   if (!email) return "U";
@@ -30,14 +26,6 @@ function initials(email?: string | null) {
   const a = parts[0]?.[0] ?? "U";
   const b = parts[1]?.[0] ?? "";
   return (a + b).toUpperCase();
-}
-
-/** YYYY-MM-DD in local time for a provided date */
-function dateKeyFromDate(d: Date): string {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
 }
 
 /**
@@ -137,11 +125,6 @@ function daysInMonth(d: Date) {
   return new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
 }
 
-/** Convert JS getDay (0=Sun..6=Sat) to 1=Mon..7=Sun */
-function weekday1to7FromJsDay(jsDay: number): number {
-  return jsDay === 0 ? 7 : jsDay;
-}
-
 /** Month calendar slots: 6 rows x 7 cols */
 type CalSlot = {
   date: Date;
@@ -153,7 +136,8 @@ function buildMonthSlots(monthDate: Date): CalSlot[] {
   const m0 = startOfMonth(monthDate);
   const dim = daysInMonth(m0);
 
-  const firstWeekday = weekday1to7FromJsDay(m0.getDay()); // 1..7
+  // weekday1to7: 1=Mon..7=Sun
+  const firstWeekday = weekday1to7(m0); // 1..7
   const leading = firstWeekday - 1; // 0..6
 
   const slots: CalSlot[] = [];
@@ -184,7 +168,6 @@ function buildMonthSlots(monthDate: Date): CalSlot[] {
 }
 
 function HeatLegendNeon() {
-  // Small dot legend like the design (not boxes)
   const dot = (cls: string) => (
     <span className={`h-2.5 w-2.5 rounded-full border border-white/12 ${cls}`} />
   );
@@ -209,15 +192,12 @@ function HeatDot({
   cell: Cell | null; // null => no data in window
   outOfMonth?: boolean;
 }) {
-  // We always show the dot. "Disabled" affects opacity and glow only.
   const disabled = cell ? cell.disabled : true;
   const intensity = cell ? cell.intensity : (0 as 0);
 
-  // Base circle size (bigger = closer to the mock)
   const base =
     "h-11 w-11 sm:h-12 sm:w-12 rounded-full border flex items-center justify-center select-none transition";
 
-  // Fill buckets (kept in your neon theme)
   const fillByIntensity: Record<0 | 1 | 2 | 3 | 4, string> = {
     0: "bg-white/[0.035]",
     1: "bg-fuchsia-500/10",
@@ -226,7 +206,6 @@ function HeatDot({
     4: "bg-fuchsia-500/55",
   };
 
-  // Strong glow for high intensity (match the design)
   const glowByIntensity: Record<0 | 1 | 2 | 3 | 4, string> = {
     0: "",
     1: "shadow-[0_0_18px_rgba(236,72,153,0.10)]",
@@ -235,7 +214,6 @@ function HeatDot({
     4: "shadow-[0_0_70px_rgba(236,72,153,0.70)]",
   };
 
-  // Add a subtle ring for the brightest dots (makes it feel “alive”)
   const ringByIntensity: Record<0 | 1 | 2 | 3 | 4, string> = {
     0: "",
     1: "",
@@ -244,7 +222,6 @@ function HeatDot({
     4: "ring-2 ring-fuchsia-200/18",
   };
 
-  // Outer glow gradient overlay (only if not disabled)
   const innerSheen =
     !disabled && intensity >= 3
       ? "before:content-[''] before:absolute before:inset-0 before:rounded-full before:bg-[radial-gradient(circle_at_35%_30%,rgba(255,255,255,0.28),transparent_55%)] before:opacity-60"
@@ -255,7 +232,6 @@ function HeatDot({
   const glow = glowByIntensity[intensity];
   const ring = ringByIntensity[intensity];
 
-  // Visibility rules
   const opacity =
     (outOfMonth ? "opacity-45" : "opacity-100") +
     (disabled ? " opacity-45" : "");
@@ -282,14 +258,12 @@ function MonthCalendar({
 
   return (
     <div>
-      {/* Month header (big like the mock) */}
       <div className="mb-4">
         <div className="text-2xl sm:text-3xl font-semibold tracking-tight text-white/90">
           {monthLabel(monthDate)}
         </div>
       </div>
 
-      {/* Weekday row */}
       <div className="grid grid-cols-7 gap-2 sm:gap-3 mb-2">
         {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((w) => (
           <div key={w} className="text-[12px] text-white/45 text-center">
@@ -298,16 +272,11 @@ function MonthCalendar({
         ))}
       </div>
 
-      {/* Dots grid */}
       <div className="grid grid-cols-7 gap-2 sm:gap-3">
         {slots.map((s) => {
           const cell = cellsByKey.get(s.key) ?? null;
-
-          // If the slot is outside month, still show it faded like the design
           const outOfMonth = !s.inMonth;
-
-          const dayText =
-            cell && !cell.disabled ? "text-white/92" : "text-white/45";
+          const dayText = cell && !cell.disabled ? "text-white/92" : "text-white/45";
 
           return (
             <div key={s.key} className="flex items-center justify-center">
@@ -333,7 +302,6 @@ export default function History() {
 
   const [rangeDays, setRangeDays] = useState<7 | 30 | 90>(30);
 
-  // Heatmap controls
   const [heatMode, setHeatMode] = useState<HeatMode>("overall");
   const [selectedHabitId, setSelectedHabitId] = useState<string>("");
 
@@ -342,9 +310,11 @@ export default function History() {
 
   const { active: activeHabits, loading: habitsLoading } = useHabits(uid);
 
-  const { dateKeysDesc, doneMap, loading: historyLoading } = useHistory(uid, rangeDays, minDateKey);
-
-  const weekdayByKey = useMemo(() => weekdayMapForKeys(dateKeysDesc), [dateKeysDesc]);
+  const { dateKeysDesc, doneMap, loading: historyLoading } = useHistory(
+    uid,
+    rangeDays,
+    minDateKey
+  );
 
   // Ensure selectedHabitId always points to a real active habit when in habit mode
   React.useEffect(() => {
@@ -358,13 +328,15 @@ export default function History() {
   const overall = useMemo(() => {
     if (!activeHabits?.length)
       return { dueCount: 0, doneCount: 0, completionRate: null as number | null };
+
     return computeOverallWindowStats({
       habits: activeHabits as any[],
       keysDesc: dateKeysDesc,
-      weekdayByKey,
       doneMap,
+      // optional; use the same clamp for all habits here
+      minDateKeyByHabitId: undefined,
     });
-  }, [activeHabits, dateKeysDesc, weekdayByKey, doneMap]);
+  }, [activeHabits, dateKeysDesc, doneMap]);
 
   const perHabitStats = useMemo(() => {
     if (!activeHabits?.length) return [];
@@ -372,33 +344,37 @@ export default function History() {
       const stats = computeHabitWindowStats({
         habit: h,
         keysDesc: dateKeysDesc,
-        weekdayByKey,
         doneMap,
+        // Keep window clamped to account creation (also prevents “ghost due” pre-registration)
+        minDateKey,
       });
       return { habit: h, stats };
     });
-  }, [activeHabits, dateKeysDesc, weekdayByKey, doneMap]);
+  }, [activeHabits, dateKeysDesc, doneMap, minDateKey]);
 
   const perDayRows = useMemo(() => {
     if (!activeHabits?.length) return [];
     const habits = activeHabits as any[];
 
-    return dateKeysDesc.map((k) => {
-      const weekday = weekdayByKey.get(k) ?? 1;
+    function isDoneDayHabit(dateKey: string, habitId: string) {
+      const set = doneMap.get(dateKey);
+      return Boolean(set && set.has(habitId));
+    }
 
+    return dateKeysDesc.map((k) => {
       let due = 0;
       let done = 0;
 
       for (const h of habits) {
-        if (!isDueOnWeekday(h, weekday)) continue;
+        const isDue = isDueOnDateKey({ habit: h, dateKey: k, minDateKey });
+        if (!isDue) continue;
         due++;
-        const set = doneMap.get(k);
-        if (set && set.has(h.id)) done++;
+        if (isDoneDayHabit(k, h.id)) done++;
       }
 
       return { dateKey: k, due, done };
     });
-  }, [activeHabits, dateKeysDesc, weekdayByKey, doneMap]);
+  }, [activeHabits, dateKeysDesc, doneMap, minDateKey]);
 
   const loading = habitsLoading || historyLoading;
 
@@ -414,13 +390,15 @@ export default function History() {
 
     if (heatMode === "overall") {
       return dateKeysDesc.map((k) => {
-        const weekday = weekdayByKey.get(k) ?? 1;
+        const d = new Date(k + "T12:00:00");
+        const weekday = weekday1to7(d);
 
         let due = 0;
         let done = 0;
 
         for (const h of habits) {
-          if (!isDueOnWeekday(h, weekday)) continue;
+          const isDue = isDueOnDateKey({ habit: h, dateKey: k, minDateKey });
+          if (!isDue) continue;
           due++;
           if (isDoneDayHabit(k, h.id)) done++;
         }
@@ -446,8 +424,10 @@ export default function History() {
     }
 
     const habit = habits.find((h) => h.id === selectedHabitId);
+
     return dateKeysDesc.map((k) => {
-      const weekday = weekdayByKey.get(k) ?? 1;
+      const d = new Date(k + "T12:00:00");
+      const weekday = weekday1to7(d);
 
       if (!habit) {
         return {
@@ -461,14 +441,16 @@ export default function History() {
         };
       }
 
-      const due = isDueOnWeekday(habit, weekday) ? 1 : 0;
+      const due = isDueOnDateKey({ habit, dateKey: k, minDateKey }) ? 1 : 0;
       const done = due === 1 && isDoneDayHabit(k, habit.id) ? 1 : 0;
       const disabled = due === 0;
 
       // Habit mode: only “done” glows
-      const intensity = disabled ? 0 : (done ? 4 : 0);
+      const intensity = disabled ? 0 : done ? 4 : 0;
 
-      const label = disabled ? `${k} • Not due` : `${k} • ${done ? "Completed" : "Not completed"}`;
+      const label = disabled
+        ? `${k} • Not due`
+        : `${k} • ${done ? "Completed" : "Not completed"}`;
 
       return {
         key: k,
@@ -480,7 +462,7 @@ export default function History() {
         label,
       };
     });
-  }, [dateKeysDesc, activeHabits, doneMap, heatMode, selectedHabitId, weekdayByKey]);
+  }, [dateKeysDesc, activeHabits, doneMap, heatMode, selectedHabitId, minDateKey]);
 
   const heatCellsByKey = useMemo(() => {
     const map = new Map<string, Cell>();
@@ -620,9 +602,7 @@ export default function History() {
               </div>
             }
           >
-            {/* Premium inner panel to match the mock */}
             <div className="relative overflow-hidden rounded-2xl border border-white/10 bg-black/20">
-              {/* Vignette + neon haze */}
               <div className="pointer-events-none absolute inset-0">
                 <div className="absolute inset-0 bg-[radial-gradient(1200px_circle_at_25%_10%,rgba(236,72,153,0.14),transparent_45%),radial-gradient(1100px_circle_at_80%_35%,rgba(99,102,241,0.12),transparent_45%),radial-gradient(900px_circle_at_50%_110%,rgba(168,85,247,0.10),transparent_50%)]" />
                 <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(255,255,255,0.06),transparent_25%,transparent_70%,rgba(0,0,0,0.45))]" />
@@ -651,8 +631,8 @@ export default function History() {
                   ) : (
                     <div className="space-y-1">
                       <div className="text-sm text-white/70">
-                        Intensity is based on your <span className="text-white/85 font-semibold">done/due</span>{" "}
-                        ratio each day.
+                        Intensity is based on your{" "}
+                        <span className="text-white/85 font-semibold">done/due</span> ratio each day.
                       </div>
                       <div className="text-xs text-white/45">Each circle = one day.</div>
                     </div>
@@ -792,5 +772,5 @@ export default function History() {
 }
 
 // ==========================
-// End of Version 5 — src/pages/History.tsx
+// End of Version 6 — src/pages/History.tsx
 // ==========================

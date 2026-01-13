@@ -1,9 +1,9 @@
 // ==========================
-// Version 12 — src/pages/Dashboard.tsx
-// - Moves Notifications control to top-left under avatar (NOT inside Today card)
-// - Adds DEBUG logs + optional on-screen debug panel (?debug=1)
-// - Explains blocked state (Chrome site settings controls it)
-// - Keeps v11 behavior otherwise
+// Version 14 — src/pages/Dashboard.tsx
+// - v13 + Push enable integration (FCM token saved to Firestore)
+// - Notifications toggle now triggers enablePushForUser(uid)
+// - Adds push status UI (saving / enabled / error)
+// - Does not disable button just because permission is already "granted"
 // ==========================
 import React, { useEffect, useMemo, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
@@ -13,8 +13,10 @@ import { db } from "../firebase/client";
 import { clearCheckin, setCheckin, getDoneMapForRange } from "../firebase/checkins";
 import { useToday } from "../hooks/useToday";
 import { useHabits } from "../hooks/useHabits";
-import { weekday1to7 } from "../utils/dateKey";
+import { lastNDaysKeys } from "../utils/dateKey";
+import { isDueOnDateKey } from "../utils/eligibility";
 import { useReminderScheduler } from "../hooks/useReminderScheduler";
+import { enablePushForUser } from "../utils/push";
 
 function initials(email?: string | null) {
   if (!email) return "U";
@@ -74,33 +76,6 @@ function DarkCard({
   );
 }
 
-/** YYYY-MM-DD in local time for a provided date */
-function dateKeyFromDate(d: Date): string {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
-}
-
-function lastNDaysKeys(n: number): string[] {
-  const out: string[] = [];
-  const now = new Date();
-  for (let i = 0; i < n; i++) {
-    const d = new Date(now);
-    d.setDate(now.getDate() - i);
-    out.push(dateKeyFromDate(d));
-  }
-  return out; // [today, yesterday, ...]
-}
-
-/** Determine if habit is due on a given weekday (1=Mon..7=Sun) */
-function isDueOnWeekday(h: any, weekday: number): boolean {
-  const type = h?.schedule?.type ?? "daily";
-  if (type === "daily") return true;
-  const days: number[] = h?.schedule?.daysOfWeek ?? [];
-  return days.includes(weekday);
-}
-
 function ReminderPill({ time }: { time: string }) {
   return (
     <span className="inline-flex items-center gap-1 rounded-full border border-white/14 bg-white/[0.06] px-2.5 py-1 text-[11px] font-semibold text-white/75">
@@ -123,6 +98,12 @@ function permissionHelp(p: NotificationPermission | "unsupported") {
     return "Blocked by browser. You must re-enable in Chrome Site settings (Notifications).";
   return "Notifications not supported here.";
 }
+
+type PushUiState =
+  | { status: "idle"; msg?: string }
+  | { status: "working"; msg: string }
+  | { status: "enabled"; msg: string }
+  | { status: "error"; msg: string };
 
 export default function Dashboard() {
   const { user, logout } = useAuth();
@@ -159,6 +140,9 @@ export default function Dashboard() {
     ? (permission ?? Notification.permission)
     : "unsupported";
 
+  // Push enable UI state (FCM)
+  const [pushUi, setPushUi] = useState<PushUiState>({ status: "idle" });
+
   // Local debug state snapshot
   const [debugSnap, setDebugSnap] = useState<Record<string, any>>({});
 
@@ -178,10 +162,10 @@ export default function Dashboard() {
       displayModeStandalone:
         (window.matchMedia && window.matchMedia("(display-mode: standalone)").matches) || false,
       navigatorStandalone: Boolean(navAny.standalone),
+      swController: Boolean(navigator.serviceWorker?.controller),
     };
   }
 
-  // Debug: log on mount and poll permission changes
   useEffect(() => {
     if (!debugOn) return;
 
@@ -200,26 +184,52 @@ export default function Dashboard() {
 
   async function enableNotificationsClick() {
     console.log("[Dashboard] EnableNotifications clicked");
-    console.log("[Dashboard] before request:", readDebugSnapshot());
+    console.log("[Dashboard] before:", readDebugSnapshot());
 
     if (!notifSupported) {
-      console.log("[Dashboard] Notification API unsupported");
+      setPushUi({ status: "error", msg: "Notifications API unsupported in this browser." });
       return;
     }
+    if (!secureContext) {
+      setPushUi({
+        status: "error",
+        msg: "Push notifications require HTTPS (or localhost).",
+      });
+      return;
+    }
+    if (!uid) return;
+
+    setPushUi({ status: "working", msg: "Enabling push…" });
 
     try {
-      const p = await Notification.requestPermission();
-      console.log("[Dashboard] requestPermission result:", p);
-      console.log("[Dashboard] after request:", readDebugSnapshot());
+      // Requests permission + gets FCM token + saves to Firestore
+      const res = await enablePushForUser(uid);
 
-      // In Chrome, if permission is "denied", requestPermission won't prompt again.
-      // User must change it in browser site settings.
-    } catch (e) {
-      console.log("[Dashboard] requestPermission error:", e);
+      console.log("[Dashboard] enablePushForUser result:", res);
+      console.log("[Dashboard] after:", readDebugSnapshot());
+
+      if (res.ok) {
+        setPushUi({ status: "enabled", msg: "Push enabled ✅" });
+      } else {
+        // Res can be ok:false with reasons
+        const msg =
+          res.reason === "permission-not-granted"
+            ? "Permission not granted."
+            : res.reason === "messaging-not-supported"
+            ? "Push messaging not supported on this device/browser."
+            : res.reason === "notifications-not-supported"
+            ? "Notifications not supported."
+            : res.reason === "no-token"
+            ? "Could not get a push token."
+            : "Push not enabled.";
+        setPushUi({ status: "error", msg });
+      }
+    } catch (e: any) {
+      console.log("[Dashboard] enable push error:", e);
+      setPushUi({ status: "error", msg: e?.message ? String(e.message) : "Enable push failed." });
     }
   }
 
-  // Existing simple stats (today snapshot)
   const stats = useMemo(() => {
     const activeHabitsCount = items.length;
     const dueCount = dueItems.length;
@@ -264,27 +274,20 @@ export default function Dashboard() {
         const keys60 = lastNDaysKeys(60);
 
         const doneMap60 = await getDoneMapForRange(db, uid, keys60);
-        const doneMap7 = new Map<string, Set<string>>();
-        keys7.forEach((k) => doneMap7.set(k, doneMap60.get(k) ?? new Set()));
 
         if (cancelled) return;
 
+        // 7d consistency
         let due7 = 0;
         let done7 = 0;
 
-        const weekdayByKey = new Map<string, number>();
-        for (const k of keys7) {
-          const d = new Date(k + "T12:00:00");
-          weekdayByKey.set(k, weekday1to7(d));
-        }
-
         for (const h of activeHabits as any[]) {
           for (const k of keys7) {
-            const weekday = weekdayByKey.get(k)!;
-            const due = isDueOnWeekday(h, weekday);
+            const due = isDueOnDateKey({ habit: h, dateKey: k, minDateKey: null });
             if (!due) continue;
             due7++;
-            const doneSet = doneMap7.get(k) ?? new Set<string>();
+
+            const doneSet = doneMap60.get(k) ?? new Set<string>();
             if (doneSet.has(h.id)) done7++;
           }
         }
@@ -292,21 +295,14 @@ export default function Dashboard() {
         const consistency = due7 === 0 ? "—" : `${Math.round((done7 / due7) * 100)}%`;
         setConsistency7d(consistency);
 
+        // Best current streak (walk back from today, only due days count)
         let best = 0;
-
-        const weekdayByKey60 = new Map<string, number>();
-        for (const k of keys60) {
-          const d = new Date(k + "T12:00:00");
-          weekdayByKey60.set(k, weekday1to7(d));
-        }
 
         for (const h of activeHabits as any[]) {
           let streak = 0;
 
           for (const k of keys60) {
-            const weekday = weekdayByKey60.get(k)!;
-            const due = isDueOnWeekday(h, weekday);
-
+            const due = isDueOnDateKey({ habit: h, dateKey: k, minDateKey: null });
             if (!due) continue;
 
             const doneSet = doneMap60.get(k) ?? new Set<string>();
@@ -337,6 +333,9 @@ export default function Dashboard() {
     };
   }, [uid, habitsLoading, activeHabits]);
   // ===========================================
+
+  const pushButtonDisabled =
+    !notifSupported || pushUi.status === "working" || notifStatus === "denied" || !uid;
 
   return (
     <Scene className="min-h-screen relative overflow-hidden" contentClassName="relative p-4 sm:p-6">
@@ -416,13 +415,26 @@ export default function Dashboard() {
                 </span>
               ) : null}
             </div>
+
+            {pushUi.status !== "idle" ? (
+              <div
+                className={`mt-2 text-[11px] ${
+                  pushUi.status === "enabled"
+                    ? "text-emerald-300/90"
+                    : pushUi.status === "error"
+                    ? "text-rose-300/90"
+                    : "text-white/55"
+                }`}
+              >
+                {pushUi.msg}
+              </div>
+            ) : null}
           </div>
 
-          {/* Switch-like button */}
           <button
             type="button"
             onClick={enableNotificationsClick}
-            disabled={!notifSupported || notifStatus === "granted"}
+            disabled={pushButtonDisabled}
             className={`relative inline-flex h-9 w-24 items-center rounded-full border transition
               ${
                 notifStatus === "granted"
@@ -435,10 +447,14 @@ export default function Dashboard() {
           >
             <span
               className={`absolute left-1 top-1 h-7 w-7 rounded-full transition
-                ${notifStatus === "granted" ? "translate-x-[56px] bg-white/80" : "translate-x-0 bg-white/55"}`}
+                ${
+                  notifStatus === "granted"
+                    ? "translate-x-[56px] bg-white/80"
+                    : "translate-x-0 bg-white/55"
+                }`}
             />
             <span className="w-full text-center text-[11px] font-semibold text-white/80">
-              {permissionLabel(notifStatus)}
+              {pushUi.status === "working" ? "…" : permissionLabel(notifStatus)}
             </span>
           </button>
         </div>
@@ -456,7 +472,8 @@ export default function Dashboard() {
               ))}
             </div>
             <div className="mt-3 text-white/45">
-              Tip: open DevTools Console and search for <span className="text-white/70">[Dashboard]</span>.
+              Tip: open DevTools Console and search for{" "}
+              <span className="text-white/70">[Dashboard]</span>.
             </div>
           </div>
         ) : null}
@@ -538,7 +555,8 @@ export default function Dashboard() {
                   { label: "7d consistency", value: insightsLoading ? "…" : consistency7d },
                   {
                     label: "Best streak",
-                    value: insightsLoading ? "…" : bestCurrentStreak == null ? "—" : String(bestCurrentStreak),
+                    value:
+                      insightsLoading ? "…" : bestCurrentStreak == null ? "—" : String(bestCurrentStreak),
                   },
                   { label: "Today rate", value: stats.todayConsistency },
                 ].map((x) => (
@@ -627,5 +645,5 @@ export default function Dashboard() {
 }
 
 // ==========================
-// End of Version 12 — src/pages/Dashboard.tsx
+// End of Version 14 — src/pages/Dashboard.tsx
 // ==========================

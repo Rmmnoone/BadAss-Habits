@@ -1,11 +1,9 @@
 // ==========================
-// Version 4 — src/pages/HabitDetails.tsx
-// - FIX: Bottom "Completions" list now respects schedule + pre-start rules
-//   * Uses same isActiveDate() logic as month calendar
-//   * Prevents toggling for inactive days (not scheduled / before start)
-// - Adds hard guard inside toggleWithWasDone() to block writes for inactive dates
-// - If an inactive day was previously marked done, it shows "Not scheduled (was marked before)"
-// - Everything else unchanged
+// Version 5 — src/pages/HabitDetails.tsx
+// - v4 + correctness refactor:
+//   * Uses shared eligibility logic from utils/eligibility
+//   * Removes local schedule/due logic duplication
+// - UI and behavior unchanged
 // ==========================
 import React, { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
@@ -15,6 +13,7 @@ import { useHabits } from "../hooks/useHabits";
 import { db } from "../firebase/client";
 import { clearCheckin, getDoneMapForRange, setCheckin } from "../firebase/checkins";
 import { dateKeyFromDate, lastNDaysKeys, weekday1to7 } from "../utils/dateKey";
+import { getDayEligibility } from "../utils/eligibility";
 
 function initials(email?: string | null) {
   if (!email) return "U";
@@ -108,9 +107,8 @@ function getCurrentMonthDays() {
   const last = new Date(year, month + 1, 0, 12, 0, 0);
   const daysInMonth = last.getDate();
 
-  // weekday1to7: 1=Mon..7=Sun
   const firstWeekday = weekday1to7(first);
-  const leadingBlanks = firstWeekday - 1; // Mon => 0 blanks
+  const leadingBlanks = firstWeekday - 1;
 
   const days: { date: Date; dayNum: number; dateKey: string }[] = [];
   for (let i = 1; i <= daysInMonth; i++) {
@@ -119,11 +117,6 @@ function getCurrentMonthDays() {
   }
 
   return { label: monthName(first), leadingBlanks, days };
-}
-
-/** Create a Date for a YYYY-MM-DD key in a DST-safe way */
-function dateFromKey(dateKey: string) {
-  return new Date(dateKey + "T12:00:00");
 }
 
 export default function HabitDetails() {
@@ -150,7 +143,6 @@ export default function HabitDetails() {
 
   const [range, setRange] = useState<RangeChoice>(30);
 
-  // Desc list (today, yesterday, ...)
   const dateKeysDesc = useMemo(() => {
     if (!minDateKey) {
       const n = range === "all" ? 90 : range;
@@ -159,7 +151,7 @@ export default function HabitDetails() {
 
     if (range === "all") {
       const n = daysBetweenInclusive(minDateKey, todayKey);
-      const CAP = 730; // MVP safety cap (~2 years)
+      const CAP = 730;
       const finalN = Math.min(n, CAP);
       return lastNDaysKeys(finalN).filter((k) => k >= minDateKey);
     }
@@ -167,11 +159,9 @@ export default function HabitDetails() {
     return lastNDaysKeys(range).filter((k) => k >= minDateKey);
   }, [range, minDateKey, todayKey]);
 
-  // Current month calendar meta
   const month = useMemo(() => getCurrentMonthDays(), []);
   const monthKeys = useMemo(() => month.days.map((x) => x.dateKey), [month.days]);
 
-  // Load checkins for BOTH (range + month) in one go
   const keysToLoad = useMemo(() => {
     const set = new Set<string>();
     for (const k of dateKeysDesc) set.add(k);
@@ -226,42 +216,23 @@ export default function HabitDetails() {
     return Boolean(set && habitId && set.has(habitId));
   }
 
-  function isScheduledOnDate(d: Date): boolean {
-    const type = (habit as any)?.schedule?.type ?? "daily";
-    if (type === "daily") return true;
-
-    const days: number[] = (habit as any)?.schedule?.daysOfWeek ?? [];
-    const wd = weekday1to7(d); // 1..7
-    return days.includes(wd);
-  }
-
-  function isActiveDate(dateKey: string, d: Date): boolean {
-    // Disabled if before habit start
-    if (minDateKey && dateKey < minDateKey) return false;
-
-    // Disabled if weekly and not scheduled on that weekday
-    if (!isScheduledOnDate(d)) return false;
-
-    // Per your requirement: future dates ARE allowed (pre-check)
-    return true;
-  }
-
-  function isActiveKey(dateKey: string): boolean {
-    // If habit not loaded, treat as inactive (safe)
-    if (!habit) return false;
-    return isActiveDate(dateKey, dateFromKey(dateKey));
+  function dayStatus(dateKey: string) {
+    if (!habit) {
+      return { isActive: false, reason: "PRE_START" as const };
+    }
+    const e = getDayEligibility({ habit, dateKey, minDateKey });
+    return e;
   }
 
   async function toggleWithWasDone(dateKey: string, wasDone: boolean) {
     if (!uid || !habitId) return;
     if (togglingKey) return;
 
-    // HARD GUARD: never allow toggling on inactive days (unscheduled / pre-start)
-    if (!isActiveKey(dateKey)) return;
+    const e = dayStatus(dateKey);
+    if (!e.isActive) return;
 
     setTogglingKey(dateKey);
 
-    // optimistic
     setDoneMap((prev) => {
       const next = new Map(prev);
       const set = new Set(next.get(dateKey) ?? []);
@@ -275,7 +246,6 @@ export default function HabitDetails() {
       if (wasDone) await clearCheckin(db, uid, dateKey, habitId);
       else await setCheckin(db, uid, dateKey, habitId);
     } catch {
-      // revert by reloading (safest)
       try {
         const map = await getDoneMapForRange(db, uid, keysToLoad);
         setDoneMap(map);
@@ -371,7 +341,7 @@ export default function HabitDetails() {
           </div>
         </div>
 
-        {/* Month view (CURRENT MONTH) */}
+        {/* Month view */}
         <DarkCard
           title="This month"
           subtitle={`${month.label} • Tap active days to toggle (future allowed)`}
@@ -395,7 +365,6 @@ export default function HabitDetails() {
             <div className="text-sm text-white/70">Loading month…</div>
           ) : (
             <div>
-              {/* Weekday header */}
               <div className="grid grid-cols-7 gap-2 mb-2">
                 {weekdayLabels.map((w) => (
                   <div key={w} className="text-[11px] font-semibold text-white/55 text-center">
@@ -404,7 +373,6 @@ export default function HabitDetails() {
                 ))}
               </div>
 
-              {/* Calendar grid */}
               <div className="grid grid-cols-7 gap-2">
                 {Array.from({ length: month.leadingBlanks }).map((_, idx) => (
                   <div
@@ -414,7 +382,8 @@ export default function HabitDetails() {
                 ))}
 
                 {month.days.map((cell) => {
-                  const activeCell = isActiveDate(cell.dateKey, cell.date);
+                  const e = dayStatus(cell.dateKey);
+                  const activeCell = e.isActive;
                   const checked = isDone(cell.dateKey);
                   const busy = togglingKey === cell.dateKey;
 
@@ -426,6 +395,13 @@ export default function HabitDetails() {
                     ? "border-emerald-300/35 bg-emerald-500/15 text-emerald-100 hover:bg-emerald-500/18"
                     : "border-white/14 bg-white/[0.06] text-white/85 hover:bg-white/[0.10]";
 
+                  const title =
+                    !activeCell
+                      ? e.reason === "PRE_START"
+                        ? "Before habit started"
+                        : "Not scheduled on this day"
+                      : cell.dateKey;
+
                   return (
                     <button
                       key={cell.dateKey}
@@ -433,13 +409,7 @@ export default function HabitDetails() {
                       disabled={!activeCell || busy}
                       onClick={() => toggleWithWasDone(cell.dateKey, checked)}
                       className={`${base} ${style} ${busy ? "opacity-60 cursor-not-allowed" : ""}`}
-                      title={
-                        !activeCell
-                          ? cell.dateKey < (minDateKey ?? "0000-00-00")
-                            ? "Before habit started"
-                            : "Not scheduled on this day"
-                          : cell.dateKey
-                      }
+                      title={title}
                     >
                       <div className="flex items-center gap-2">
                         <span className="text-sm font-semibold">{cell.dayNum}</span>
@@ -513,7 +483,7 @@ export default function HabitDetails() {
           ) : null}
         </div>
 
-        {/* Descending list (FIXED) */}
+        {/* Descending list */}
         <DarkCard
           title="Completions"
           subtitle="Descending list (today, yesterday, …)"
@@ -543,16 +513,26 @@ export default function HabitDetails() {
                 const wasDone = isDone(k);
                 const busy = togglingKey === k;
 
-                const activeRow = isActiveKey(k);
+                const e = dayStatus(k);
+                const activeRow = e.isActive;
                 const disabledRow = busy || !activeRow;
 
                 const subtitleText = !activeRow
                   ? wasDone
                     ? "Not scheduled (was marked before)"
+                    : e.reason === "PRE_START"
+                    ? "Before habit started"
                     : "Not scheduled"
                   : wasDone
                   ? "Completed"
                   : "Not completed";
+
+                const title =
+                  !activeRow
+                    ? e.reason === "PRE_START"
+                      ? "Before habit started"
+                      : "Not scheduled on this day"
+                    : k;
 
                 return (
                   <button
@@ -568,13 +548,7 @@ export default function HabitDetails() {
                                    ? "border-white/10 bg-white/[0.04] opacity-55 cursor-not-allowed"
                                    : "border-white/14 bg-white/[0.06] hover:bg-white/[0.09]"
                                }`}
-                    title={
-                      !activeRow
-                        ? k < (minDateKey ?? "0000-00-00")
-                          ? "Before habit started"
-                          : "Not scheduled on this day"
-                        : k
-                    }
+                    title={title}
                   >
                     <div className="min-w-0">
                       <div className="text-sm font-semibold text-white">{k}</div>
@@ -602,5 +576,5 @@ export default function HabitDetails() {
 }
 
 // ==========================
-// End of Version 4 — src/pages/HabitDetails.tsx
+// End of Version 5 — src/pages/HabitDetails.tsx
 // ==========================

@@ -459,7 +459,17 @@ export default function Habits() {
             >
               Dashboard
             </Link>
-
+            
+            <Link
+              to="/history"
+              className="rounded-xl border border-white/14
+               bg-gradient-to-b from-white/[0.12] to-white/[0.05]
+               backdrop-blur-2xl px-4 py-2 text-sm font-semibold text-white/90
+               hover:from-white/[0.16] hover:to-white/[0.07] transition
+               shadow-[0_28px_80px_-60px_rgba(0,0,0,0.98)]"
+            >
+              History
+            </Link>
             <button
               onClick={onLogout}
               className="rounded-xl border border-white/14

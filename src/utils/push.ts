@@ -1,15 +1,43 @@
 // ==========================
-// Version 2 — src/utils/push.ts
-// - Requests notification permission (must be called from a user gesture)
-// - Gets FCM token (VAPID key required)
-// - Uses active service worker registration (required for reliable web push)
-// - Saves token to Firestore
+// Version 3 — src/utils/push.ts
+// - v2 + token lifecycle management
+//   * Saves token only when changed
+//   * Removes old token doc when token rotates
+//   * Stores last token in localStorage per uid
+//   * Adds disablePushForUser(uid) for logout cleanup (no permission prompts)
+//   * Best-effort deletes FCM token via deleteToken()
 // ==========================
-import { getMessaging, getToken, isSupported } from "firebase/messaging";
+import { getMessaging, getToken, deleteToken, isSupported } from "firebase/messaging";
 import { app, db } from "../firebase/client";
-import { savePushToken } from "../firebase/pushTokens";
+import { upsertPushToken, removePushToken } from "../firebase/pushTokens";
 
 const VAPID_KEY = import.meta.env.VITE_FIREBASE_VAPID_KEY as string | undefined;
+
+const LS_PREFIX = "bah:lastPushToken";
+
+function lsKey(uid: string) {
+  return `${LS_PREFIX}:${uid}`;
+}
+
+function readLastToken(uid: string): string | null {
+  try {
+    if (typeof window === "undefined") return null;
+    return localStorage.getItem(lsKey(uid));
+  } catch {
+    return null;
+  }
+}
+
+function writeLastToken(uid: string, token: string | null) {
+  try {
+    if (typeof window === "undefined") return;
+    const k = lsKey(uid);
+    if (!token) localStorage.removeItem(k);
+    else localStorage.setItem(k, token);
+  } catch {
+    // ignore
+  }
+}
 
 async function getActiveServiceWorkerRegistration() {
   if (typeof window === "undefined") return null;
@@ -20,36 +48,50 @@ async function getActiveServiceWorkerRegistration() {
   return reg;
 }
 
-export async function enablePushForUser(uid: string) {
+type EnablePushResult =
+  | { ok: true; token: string; changed: boolean; created: boolean }
+  | {
+      ok: false;
+      reason:
+        | "no-window"
+        | "messaging-not-supported"
+        | "notifications-not-supported"
+        | "permission-not-granted"
+        | "missing-vapid-key"
+        | "no-service-worker"
+        | "no-token";
+    };
+
+export async function enablePushForUser(uid: string): Promise<EnablePushResult> {
   if (!uid) throw new Error("Missing uid");
 
   if (typeof window === "undefined") {
-    return { ok: false as const, reason: "no-window" as const };
+    return { ok: false, reason: "no-window" };
   }
 
   const supported = await isSupported().catch(() => false);
   if (!supported) {
-    return { ok: false as const, reason: "messaging-not-supported" as const };
+    return { ok: false, reason: "messaging-not-supported" };
   }
 
   if (!("Notification" in window)) {
-    return { ok: false as const, reason: "notifications-not-supported" as const };
+    return { ok: false, reason: "notifications-not-supported" };
   }
 
   // Permission must come from a user action (button click)
   const perm = await Notification.requestPermission();
   if (perm !== "granted") {
-    return { ok: false as const, reason: "permission-not-granted" as const };
+    return { ok: false, reason: "permission-not-granted" };
   }
 
   if (!VAPID_KEY) {
-    throw new Error("Missing env: VITE_FIREBASE_VAPID_KEY");
+    return { ok: false, reason: "missing-vapid-key" };
   }
 
   // Must have a SW reg for background notifications
   const swReg = await getActiveServiceWorkerRegistration();
   if (!swReg) {
-    return { ok: false as const, reason: "no-service-worker" as const };
+    return { ok: false, reason: "no-service-worker" };
   }
 
   const messaging = getMessaging(app);
@@ -60,14 +102,81 @@ export async function enablePushForUser(uid: string) {
   });
 
   if (!token) {
-    return { ok: false as const, reason: "no-token" as const };
+    return { ok: false, reason: "no-token" };
   }
 
-  await savePushToken(db, uid, token);
+  const prev = readLastToken(uid);
+  const changed = Boolean(prev && prev !== token);
 
-  return { ok: true as const, token };
+  // If token rotated, remove old doc best-effort
+  if (prev && prev !== token) {
+    try {
+      await removePushToken(db, uid, prev);
+    } catch {
+      // ignore
+    }
+  }
+
+  // Save only when new or changed (or missing local record)
+  if (!prev || prev !== token) {
+    const { created } = await upsertPushToken(db, uid, token);
+    writeLastToken(uid, token);
+    return { ok: true, token, changed: true, created };
+  }
+
+  // Token same as last time; nothing to write
+  return { ok: true, token, changed: false, created: false };
+}
+
+type DisablePushResult =
+  | { ok: true }
+  | { ok: false; reason: "no-window" | "messaging-not-supported" | "no-service-worker" };
+
+export async function disablePushForUser(uid: string): Promise<DisablePushResult> {
+  if (!uid) throw new Error("Missing uid");
+
+  if (typeof window === "undefined") {
+    return { ok: false, reason: "no-window" };
+  }
+
+  const supported = await isSupported().catch(() => false);
+  if (!supported) {
+    // Still clear local token record
+    writeLastToken(uid, null);
+    return { ok: false, reason: "messaging-not-supported" };
+  }
+
+  // Don’t prompt for permission here. If user previously granted, we can clean up.
+  const last = readLastToken(uid);
+
+  // Remove Firestore doc for last known token
+  if (last) {
+    try {
+      await removePushToken(db, uid, last);
+    } catch {
+      // ignore
+    }
+  }
+
+  // Best-effort delete the FCM token in browser (unsubscribe)
+  try {
+    const swReg = await getActiveServiceWorkerRegistration();
+    if (!swReg) {
+      writeLastToken(uid, null);
+      return { ok: false, reason: "no-service-worker" };
+    }
+
+    const messaging = getMessaging(app);
+    await deleteToken(messaging); // best-effort; may fail in some environments
+  } catch {
+    // ignore
+  }
+
+  // Clear local token record regardless
+  writeLastToken(uid, null);
+  return { ok: true };
 }
 
 // ==========================
-// End of Version 2 — src/utils/push.ts
+// End of Version 3 — src/utils/push.ts
 // ==========================

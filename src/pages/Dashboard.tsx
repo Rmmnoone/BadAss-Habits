@@ -1,9 +1,9 @@
 // ==========================
-// Version 14 — src/pages/Dashboard.tsx
-// - v13 + Push enable integration (FCM token saved to Firestore)
-// - Notifications toggle now triggers enablePushForUser(uid)
-// - Adds push status UI (saving / enabled / error)
-// - Does not disable button just because permission is already "granted"
+// Version 16 — src/pages/Dashboard.tsx
+// - v15 + per-habit current streak shown in Today list
+//   * Computes current streak for active habits (within last 60 days, due-days only)
+//   * Shows "🔥 {n}" pill next to reminder pill on Today items
+// - Rest of UI unchanged
 // ==========================
 import React, { useEffect, useMemo, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
@@ -84,6 +84,17 @@ function ReminderPill({ time }: { time: string }) {
   );
 }
 
+function StreakPill({ n }: { n: number }) {
+  return (
+    <span
+      className="inline-flex items-center gap-1 rounded-full border border-white/14 bg-white/[0.06] px-2.5 py-1 text-[11px] font-semibold text-white/75"
+      title="Current streak (due days only)"
+    >
+      <span className="opacity-80">🔥</span> {n}
+    </span>
+  );
+}
+
 function permissionLabel(p: NotificationPermission | "unsupported") {
   if (p === "granted") return "ON";
   if (p === "denied") return "BLOCKED";
@@ -124,6 +135,8 @@ export default function Dashboard() {
   const [insightsLoading, setInsightsLoading] = useState(false);
   const [bestCurrentStreak, setBestCurrentStreak] = useState<number | null>(null);
   const [consistency7d, setConsistency7d] = useState<string>("—");
+  // Per-habit current streak map (for Today pills)
+  const [streakByHabitId, setStreakByHabitId] = useState<Record<string, number>>({});
   // =============================
 
   const notifSupported = typeof window !== "undefined" && "Notification" in window;
@@ -202,16 +215,21 @@ export default function Dashboard() {
     setPushUi({ status: "working", msg: "Enabling push…" });
 
     try {
-      // Requests permission + gets FCM token + saves to Firestore
-      const res = await enablePushForUser(uid);
+      // Requests permission + gets FCM token + saves to Firestore (if needed)
+      const res: any = await enablePushForUser(uid);
 
       console.log("[Dashboard] enablePushForUser result:", res);
       console.log("[Dashboard] after:", readDebugSnapshot());
 
       if (res.ok) {
-        setPushUi({ status: "enabled", msg: "Push enabled ✅" });
+        if (res.changed === false) {
+          setPushUi({ status: "enabled", msg: "Push already enabled ✅" });
+        } else if (res.created) {
+          setPushUi({ status: "enabled", msg: "Push enabled ✅ (token saved)" });
+        } else {
+          setPushUi({ status: "enabled", msg: "Push enabled ✅ (token updated)" });
+        }
       } else {
-        // Res can be ok:false with reasons
         const msg =
           res.reason === "permission-not-granted"
             ? "Permission not granted."
@@ -221,6 +239,10 @@ export default function Dashboard() {
             ? "Notifications not supported."
             : res.reason === "no-token"
             ? "Could not get a push token."
+            : res.reason === "no-service-worker"
+            ? "Service worker not ready."
+            : res.reason === "missing-vapid-key"
+            ? "Missing VITE_FIREBASE_VAPID_KEY."
             : "Push not enabled.";
         setPushUi({ status: "error", msg });
       }
@@ -249,7 +271,7 @@ export default function Dashboard() {
     }
   }
 
-  // ===== Compute streak + 7d consistency =====
+  // ===== Compute streak + 7d consistency (+ per-habit streak map) =====
   useEffect(() => {
     let cancelled = false;
 
@@ -257,6 +279,7 @@ export default function Dashboard() {
       if (!uid) {
         setBestCurrentStreak(null);
         setConsistency7d("—");
+        setStreakByHabitId({});
         return;
       }
       if (habitsLoading) return;
@@ -264,6 +287,7 @@ export default function Dashboard() {
       if (!activeHabits || activeHabits.length === 0) {
         setBestCurrentStreak(0);
         setConsistency7d("—");
+        setStreakByHabitId({});
         return;
       }
 
@@ -295,7 +319,8 @@ export default function Dashboard() {
         const consistency = due7 === 0 ? "—" : `${Math.round((done7 / due7) * 100)}%`;
         setConsistency7d(consistency);
 
-        // Best current streak (walk back from today, only due days count)
+        // Per-habit current streak (walk back from today, due days only)
+        const streakMap: Record<string, number> = {};
         let best = 0;
 
         for (const h of activeHabits as any[]) {
@@ -312,15 +337,18 @@ export default function Dashboard() {
             else break;
           }
 
+          streakMap[h.id] = streak;
           if (streak > best) best = streak;
         }
 
+        setStreakByHabitId(streakMap);
         setBestCurrentStreak(best);
       } catch (e) {
         console.log("[Dashboard] insights error:", e);
         if (!cancelled) {
           setBestCurrentStreak(null);
           setConsistency7d("—");
+          setStreakByHabitId({});
         }
       } finally {
         if (!cancelled) setInsightsLoading(false);
@@ -331,8 +359,8 @@ export default function Dashboard() {
     return () => {
       cancelled = true;
     };
-  }, [uid, habitsLoading, activeHabits]);
-  // ===========================================
+  }, [uid, habitsLoading, activeHabits, dateKey]);
+  // ================================================================
 
   const pushButtonDisabled =
     !notifSupported || pushUi.status === "working" || notifStatus === "denied" || !uid;
@@ -447,11 +475,7 @@ export default function Dashboard() {
           >
             <span
               className={`absolute left-1 top-1 h-7 w-7 rounded-full transition
-                ${
-                  notifStatus === "granted"
-                    ? "translate-x-[56px] bg-white/80"
-                    : "translate-x-0 bg-white/55"
-                }`}
+                ${notifStatus === "granted" ? "translate-x-[56px] bg-white/80" : "translate-x-0 bg-white/55"}`}
             />
             <span className="w-full text-center text-[11px] font-semibold text-white/80">
               {pushUi.status === "working" ? "…" : permissionLabel(notifStatus)}
@@ -472,8 +496,7 @@ export default function Dashboard() {
               ))}
             </div>
             <div className="mt-3 text-white/45">
-              Tip: open DevTools Console and search for{" "}
-              <span className="text-white/70">[Dashboard]</span>.
+              Tip: open DevTools Console and search for <span className="text-white/70">[Dashboard]</span>.
             </div>
           </div>
         ) : null}
@@ -503,6 +526,8 @@ export default function Dashboard() {
                 <div className="space-y-2">
                   {dueItems.map((h) => {
                     const isBusy = busyId === h.id;
+                    const streak = streakByHabitId[h.id] ?? 0;
+
                     return (
                       <div
                         key={h.id}
@@ -511,10 +536,15 @@ export default function Dashboard() {
                                    flex items-center justify-between gap-3"
                       >
                         <div className="min-w-0">
-                          <div className="flex items-center gap-2">
+                          <div className="flex items-center gap-2 flex-wrap">
                             <div className="text-sm font-semibold text-white truncate">{h.name}</div>
+
                             {h.reminderEnabled ? <ReminderPill time={h.reminderTime} /> : null}
+
+                            {/* NEW: current streak pill */}
+                            <StreakPill n={streak} />
                           </div>
+
                           <div className="mt-1 text-xs text-white/55">
                             {h.done ? "Done ✅" : "Not done yet"}
                           </div>
@@ -645,5 +675,5 @@ export default function Dashboard() {
 }
 
 // ==========================
-// End of Version 14 — src/pages/Dashboard.tsx
+// End of Version 16 — src/pages/Dashboard.tsx
 // ==========================

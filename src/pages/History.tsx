@@ -1,13 +1,11 @@
 // ==========================
-// Version 6 — src/pages/History.tsx
-// - Refactor: uses utils/eligibility.ts for due logic (single source of truth)
-// - Refactor: uses updated utils/history.ts (v2 signatures)
-// - Removes weekdayMapForKeys + isDueOnWeekday dependencies
-// - Uses dateKeyFromDate from utils/dateKey.ts (no duplicate helper here)
-// - Keeps heatmap design + both modes (overall / single habit), read-only
+// Version 7 — src/pages/History.tsx
+// - v6 + links Per-habit streak rows to Habit Details (/habits/:habitId)
+//   * Click row -> navigate to details for drill-down + editing
+// - Keeps heatmap + analytics logic unchanged
 // ==========================
 import React, { useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import Scene from "../components/Scene";
 import { useAuth } from "../auth/AuthProvider";
 import { useHabits } from "../hooks/useHabits";
@@ -299,6 +297,7 @@ function MonthCalendar({
 export default function History() {
   const { user, logout } = useAuth();
   const uid = user?.uid ?? null;
+  const nav = useNavigate();
 
   const [rangeDays, setRangeDays] = useState<7 | 30 | 90>(30);
 
@@ -701,14 +700,20 @@ export default function History() {
               ) : (
                 <div className="space-y-2">
                   {perHabitStats.map(({ habit, stats }) => (
-                    <div
+                    <button
                       key={habit.id}
-                      className="rounded-xl border border-white/14 bg-white/[0.07] p-4 backdrop-blur-2xl
+                      type="button"
+                      onClick={() => nav(`/habits/${habit.id}`)}
+                      className="w-full text-left rounded-xl border border-white/14 bg-white/[0.07] p-4 backdrop-blur-2xl
                                  shadow-[0_20px_60px_-50px_rgba(0,0,0,0.98)]
-                                 flex items-center justify-between gap-3"
+                                 flex items-center justify-between gap-3
+                                 hover:bg-white/[0.10] transition"
+                      title="Open Habit Details"
                     >
                       <div className="min-w-0">
-                        <div className="text-sm font-semibold text-white truncate">{habit.name}</div>
+                        <div className="text-sm font-semibold text-white truncate">
+                          {habit.name} <span className="text-white/35 text-xs ml-2">→</span>
+                        </div>
                         <div className="mt-1 text-xs text-white/55">
                           Rate: <span className="text-white/75">{pct(stats.completionRate)}</span> • Due:{" "}
                           <span className="text-white/75">{stats.dueCount}</span> • Done:{" "}
@@ -724,7 +729,7 @@ export default function History() {
                           Best: <span className="text-white font-semibold">{stats.bestStreak}</span>
                         </div>
                       </div>
-                    </div>
+                    </button>
                   ))}
                 </div>
               )}
@@ -764,7 +769,7 @@ export default function History() {
         </div>
 
         <div className="mt-6 text-center text-xs text-white/45">
-          Tip: Notifications come after Phase 5 (PWA install + reminders).
+          Tip: Click a habit row above to open Habit Details and drill down 😎
         </div>
       </div>
     </Scene>
@@ -772,5 +777,5 @@ export default function History() {
 }
 
 // ==========================
-// End of Version 6 — src/pages/History.tsx
+// End of Version 7 — src/pages/History.tsx
 // ==========================

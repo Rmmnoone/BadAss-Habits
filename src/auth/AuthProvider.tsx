@@ -1,12 +1,19 @@
 // ==========================
-// Version 1 — src/auth/AuthProvider.tsx
-// - Provides Firebase auth state + helpers (register/login/logout)
-// - Exposes: user, loading, register, login, logout
+// Version 3 — src/auth/AuthProvider.tsx
+// - v2 + ensureUserDoc is best-effort (never blocks login/register UX)
+// - Keeps push token cleanup on logout
 // ==========================
 import React, { createContext, useContext, useEffect, useMemo, useState } from "react";
 import type { User } from "firebase/auth";
-import { onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut } from "firebase/auth";
-import { auth } from "../firebase/client";
+import {
+  onAuthStateChanged,
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+  signOut,
+} from "firebase/auth";
+import { auth, db } from "../firebase/client";
+import { disablePushForUser } from "../utils/push";
+import { ensureUserDoc } from "../firebase/users";
 
 type AuthContextValue = {
   user: User | null;
@@ -34,13 +41,40 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     () => ({
       user,
       loading,
+
       register: async (email, password) => {
-        await createUserWithEmailAndPassword(auth, email, password);
+        const cred = await createUserWithEmailAndPassword(auth, email, password);
+
+        // Best-effort: don’t break signup if Firestore rules/config hiccup
+        try {
+          await ensureUserDoc(db, cred.user.uid, cred.user.email);
+        } catch (e) {
+          // eslint-disable-next-line no-console
+          console.log("[AuthProvider] ensureUserDoc(register) failed (ignored):", e);
+        }
       },
+
       login: async (email, password) => {
-        await signInWithEmailAndPassword(auth, email, password);
+        const cred = await signInWithEmailAndPassword(auth, email, password);
+
+        // Best-effort: don’t break login if Firestore rules/config hiccup
+        try {
+          await ensureUserDoc(db, cred.user.uid, cred.user.email);
+        } catch (e) {
+          // eslint-disable-next-line no-console
+          console.log("[AuthProvider] ensureUserDoc(login) failed (ignored):", e);
+        }
       },
+
       logout: async () => {
+        const uid = user?.uid ?? null;
+        if (uid) {
+          try {
+            await disablePushForUser(uid);
+          } catch {
+            // ignore
+          }
+        }
         await signOut(auth);
       },
     }),
@@ -55,3 +89,7 @@ export function useAuth() {
   if (!ctx) throw new Error("useAuth must be used inside <AuthProvider />");
   return ctx;
 }
+
+// ==========================
+// End of Version 3 — src/auth/AuthProvider.tsx
+// ==========================

@@ -1,9 +1,11 @@
 // ==========================
-// Version 16 — src/pages/Dashboard.tsx
-// - v15 + per-habit current streak shown in Today list
-//   * Computes current streak for active habits (within last 60 days, due-days only)
-//   * Shows "🔥 {n}" pill next to reminder pill on Today items
-// - Rest of UI unchanged
+// Version 17 — src/pages/Dashboard.tsx
+// - v16 + Reminder clarity on Dashboard (UI-only, NO logic changes):
+//   * Replaces misleading “only works while app is open” copy (push is now live)
+//   * Adds "Reminders" helper text: exact reminders + 16:00 digest rule
+//   * Adds Next reminder (earliest HH:MM among due habits with reminders enabled)
+//   * Improves Reminder pill: shows ⏰ Off optionally, keeps existing ⏰ time
+//   * Updates placeholder Insights list to reflect current reality
 // ==========================
 import React, { useEffect, useMemo, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
@@ -76,10 +78,10 @@ function DarkCard({
   );
 }
 
-function ReminderPill({ time }: { time: string }) {
+function ReminderPill({ time, off }: { time?: string; off?: boolean }) {
   return (
     <span className="inline-flex items-center gap-1 rounded-full border border-white/14 bg-white/[0.06] px-2.5 py-1 text-[11px] font-semibold text-white/75">
-      <span className="opacity-80">⏰</span> {time}
+      <span className="opacity-80">⏰</span> {off ? "Off" : time}
     </span>
   );
 }
@@ -103,11 +105,22 @@ function permissionLabel(p: NotificationPermission | "unsupported") {
 }
 
 function permissionHelp(p: NotificationPermission | "unsupported") {
-  if (p === "granted") return "Enabled. You’ll get nudges while the app is open.";
+  if (p === "granted") return "Enabled. Push reminders can arrive even when the app is closed.";
   if (p === "default") return "Click to enable.";
   if (p === "denied")
     return "Blocked by browser. You must re-enable in Chrome Site settings (Notifications).";
   return "Notifications not supported here.";
+}
+
+function isValidHHMM(s: any): boolean {
+  if (typeof s !== "string") return false;
+  return /^([01]\d|2[0-3]):([0-5]\d)$/.test(s);
+}
+
+function hmToMinutes(hm: string): number {
+  const [h, m] = hm.split(":").map((x) => Number(x));
+  if (!Number.isFinite(h) || !Number.isFinite(m)) return Number.POSITIVE_INFINITY;
+  return h * 60 + m;
 }
 
 type PushUiState =
@@ -142,7 +155,7 @@ export default function Dashboard() {
   const notifSupported = typeof window !== "undefined" && "Notification" in window;
   const secureContext = typeof window !== "undefined" ? window.isSecureContext : false;
 
-  // Enable zero-cost reminders while app is open
+  // (kept) Hook-based permission snapshot (does not drive push; only UI state)
   const { permission } = useReminderScheduler({
     enabled: Boolean(uid),
     dateKey,
@@ -259,6 +272,18 @@ export default function Dashboard() {
     const todayConsistency = dueCount === 0 ? "—" : `${Math.round((doneCount / dueCount) * 100)}%`;
     return { activeHabitsCount, dueCount, doneCount, todayConsistency };
   }, [items, dueItems]);
+
+  // NEW: Next reminder (earliest HH:MM among today’s due habits with reminders enabled)
+  const nextReminderHM = useMemo(() => {
+    const times = (dueItems as any[])
+      .filter((h) => Boolean(h?.reminderEnabled) && isValidHHMM(h?.reminderTime))
+      .map((h) => String(h.reminderTime));
+
+    if (!times.length) return null;
+
+    const sorted = times.slice().sort((a, b) => hmToMinutes(a) - hmToMinutes(b));
+    return sorted[0] ?? null;
+  }, [dueItems]);
 
   async function toggle(habitId: string, nextDone: boolean) {
     if (!uid) return;
@@ -444,6 +469,17 @@ export default function Dashboard() {
               ) : null}
             </div>
 
+            <div className="mt-2 text-[11px] text-white/45">
+              Exact reminders: sent at each habit’s time (if enabled). Daily digest:{" "}
+              <span className="text-white/70">16:00</span> (only if you have ≥1 due habit).
+              {nextReminderHM ? (
+                <span className="text-white/60">
+                  {" "}
+                  • Next reminder today: <span className="text-white/80">{nextReminderHM}</span>
+                </span>
+              ) : null}
+            </div>
+
             {pushUi.status !== "idle" ? (
               <div
                 className={`mt-2 text-[11px] ${
@@ -524,9 +560,12 @@ export default function Dashboard() {
                 </div>
               ) : (
                 <div className="space-y-2">
-                  {dueItems.map((h) => {
+                  {dueItems.map((h: any) => {
                     const isBusy = busyId === h.id;
                     const streak = streakByHabitId[h.id] ?? 0;
+
+                    const remOn = Boolean(h.reminderEnabled) && isValidHHMM(h.reminderTime);
+                    const remTime = String(h.reminderTime ?? "");
 
                     return (
                       <div
@@ -539,9 +578,8 @@ export default function Dashboard() {
                           <div className="flex items-center gap-2 flex-wrap">
                             <div className="text-sm font-semibold text-white truncate">{h.name}</div>
 
-                            {h.reminderEnabled ? <ReminderPill time={h.reminderTime} /> : null}
+                            {remOn ? <ReminderPill time={remTime} /> : <ReminderPill off />}
 
-                            {/* NEW: current streak pill */}
                             <StreakPill n={streak} />
                           </div>
 
@@ -570,7 +608,7 @@ export default function Dashboard() {
               )}
 
               <div className="mt-4 text-xs text-white/45">
-                Tip: Reminders are “best-effort” and only work while the app tab/window is open (MVP).
+                Tip: If push is ON, reminders can arrive in the background. If push is OFF/BLOCKED, you won’t get nudges.
               </div>
             </DarkCard>
           </div>
@@ -581,7 +619,8 @@ export default function Dashboard() {
                 {[
                   { label: "Active habits", value: String(items.length) },
                   { label: "Due today", value: String(dueItems.length) },
-                  { label: "Today done", value: String(dueItems.filter((x) => x.done).length) },
+                  { label: "Today done", value: String(dueItems.filter((x: any) => x.done).length) },
+                  { label: "Next reminder", value: nextReminderHM ?? "—" },
                   { label: "7d consistency", value: insightsLoading ? "…" : consistency7d },
                   {
                     label: "Best streak",
@@ -589,6 +628,7 @@ export default function Dashboard() {
                       insightsLoading ? "…" : bestCurrentStreak == null ? "—" : String(bestCurrentStreak),
                   },
                   { label: "Today rate", value: stats.todayConsistency },
+                  { label: "Push", value: permissionLabel(notifStatus) },
                 ].map((x) => (
                   <div
                     key={x.label}
@@ -624,15 +664,15 @@ export default function Dashboard() {
               <ul className="mt-3 space-y-2 text-sm text-white/70">
                 <li className="flex gap-2">
                   <span className="text-white/50">•</span>
-                  <span>Per-habit streak display inside Today list</span>
+                  <span>Longest streak (true, lifetime) + goals</span>
                 </li>
                 <li className="flex gap-2">
                   <span className="text-white/50">•</span>
-                  <span>History view (7/30 days)</span>
+                  <span>“Missed due days” + recovery suggestions</span>
                 </li>
                 <li className="flex gap-2">
                   <span className="text-white/50">•</span>
-                  <span>Longest streak (true) + goals</span>
+                  <span>Weekly trend + habit ranking</span>
                 </li>
               </ul>
             </div>
@@ -675,5 +715,5 @@ export default function Dashboard() {
 }
 
 // ==========================
-// End of Version 16 — src/pages/Dashboard.tsx
+// End of Version 17 — src/pages/Dashboard.tsx
 // ==========================

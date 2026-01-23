@@ -1,10 +1,10 @@
 // ==========================
-// Version 8 — src/pages/Habits.tsx
-// - Adds per-habit Reminder time (zero-cost setting only)
-//   * Schedule modal: toggle Reminder + pick time (HH:MM)
-//   * Saves into schedule/main + denormalizes into habit doc (reminders.*)
-// - Improves habit list summary using denormalized schedule + reminders
-// - Keeps Version 7 behavior intact
+// Version 10 — src/pages/Habits.tsx
+// - v9 + Reminder copy aligned with live Push scheduler (UI-only):
+//   * Updates ScheduleModal reminder help text:
+//     - Exact reminders at habit time (if enabled)
+//     - Daily digest at 16:00 if ≥1 due habit
+//   * Keeps reminder pill + due-today pill behavior unchanged
 // ==========================
 import React, { useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
@@ -60,9 +60,7 @@ function GlassCard({
         <div className="relative p-5 sm:p-6">
           <div className="flex items-start justify-between gap-3">
             <div>
-              <h2 className="text-base sm:text-lg font-semibold tracking-tight text-white">
-                {title}
-              </h2>
+              <h2 className="text-base sm:text-lg font-semibold tracking-tight text-white">{title}</h2>
               {subtitle ? <p className="mt-1 text-sm text-white/70">{subtitle}</p> : null}
             </div>
             {right ? <div className="shrink-0">{right}</div> : null}
@@ -86,9 +84,45 @@ function scheduleSummary(type: HabitScheduleType, days?: number[]) {
   return d.length ? `Weekly: ${d.join(", ")}` : "Weekly: (pick days)";
 }
 
-function reminderSummary(reminders?: any) {
-  if (!reminders?.enabled) return "Off";
-  return reminders?.time ? `On • ${reminders.time}` : "On";
+function reminderPill(reminders?: any) {
+  const enabled = Boolean(reminders?.enabled);
+  const time = typeof reminders?.time === "string" ? reminders.time : "";
+
+  if (!enabled) {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full border border-white/12 bg-white/[0.04] px-2.5 py-1 text-[11px] text-white/55">
+        <span aria-hidden>⏰</span> Off
+      </span>
+    );
+  }
+
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full border border-white/18 bg-white/[0.07] px-2.5 py-1 text-[11px] text-white/80">
+      <span aria-hidden>⏰</span> {time || "On"}
+    </span>
+  );
+}
+
+function isDueTodayLocal(h: any, weekday1to7: number) {
+  const type: HabitScheduleType = h?.schedule?.type ?? "daily";
+  if (type === "daily") return true;
+  const days: number[] = Array.isArray(h?.schedule?.daysOfWeek) ? h.schedule.daysOfWeek : [];
+  return days.includes(weekday1to7);
+}
+
+function duePill(due: boolean) {
+  if (due) {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full border border-emerald-400/25 bg-emerald-500/10 px-2.5 py-1 text-[11px] text-emerald-200">
+        Due today <span aria-hidden>✅</span>
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full border border-white/12 bg-white/[0.04] px-2.5 py-1 text-[11px] text-white/55">
+      Not due today
+    </span>
+  );
 }
 
 function ScheduleModal({
@@ -206,19 +240,11 @@ function ScheduleModal({
             <div className="rounded-xl border border-white/14 bg-white/[0.05] p-4">
               <div className="text-xs font-semibold text-white/75 mb-3">Frequency</div>
               <div className="flex gap-2">
-                <button
-                  type="button"
-                  onClick={() => setType("daily")}
-                  className={freqButtonClass(type === "daily")}
-                >
+                <button type="button" onClick={() => setType("daily")} className={freqButtonClass(type === "daily")}>
                   {type === "daily" ? "✓ Daily" : "Daily"}
                 </button>
 
-                <button
-                  type="button"
-                  onClick={() => setType("weekly")}
-                  className={freqButtonClass(type === "weekly")}
-                >
+                <button type="button" onClick={() => setType("weekly")} className={freqButtonClass(type === "weekly")}>
                   {type === "weekly" ? "✓ Weekly" : "Weekly"}
                 </button>
               </div>
@@ -228,9 +254,7 @@ function ScheduleModal({
 
             {/* Days */}
             <div
-              className={`rounded-xl border border-white/14 bg-white/[0.05] p-4 ${
-                daysDisabled ? "opacity-75" : ""
-              }`}
+              className={`rounded-xl border border-white/14 bg-white/[0.05] p-4 ${daysDisabled ? "opacity-75" : ""}`}
             >
               <div className="text-xs font-semibold text-white/75 mb-3">Days of week</div>
 
@@ -266,7 +290,9 @@ function ScheduleModal({
                 <div>
                   <div className="text-xs font-semibold text-white/75">Reminder</div>
                   <div className="mt-1 text-xs text-white/45">
-                    Zero-cost setting. (Optional next step: local notifications in PWA.)
+                    If Push is enabled, we send <span className="text-white/70">Exact reminders</span> at this time (when due).
+                    <span className="text-white/60"> • </span>
+                    Daily digest runs at <span className="text-white/70">16:00</span> if you have ≥1 due habit.
                   </div>
                 </div>
 
@@ -326,7 +352,7 @@ function ScheduleModal({
             </button>
 
             <div className="text-xs text-white/45 text-center">
-              Next: show reminder pills on Dashboard + (optional) PWA local notifications.
+              Tip: You can verify deliveries in <span className="text-white/70">History → Reminder logs</span>.
             </div>
           </div>
         </div>
@@ -368,7 +394,6 @@ export default function Habits() {
 
   async function onCreate(e: React.FormEvent) {
     e.preventDefault();
-
     if (!uid) return;
 
     setError(null);
@@ -417,6 +442,12 @@ export default function Habits() {
     }
   }
 
+  const weekdayLocal = useMemo(() => {
+    // Monday=1..Sunday=7
+    const js = new Date().getDay(); // Sun=0..Sat=6
+    return js === 0 ? 7 : js;
+  }, []);
+
   return (
     <Scene className="min-h-screen relative overflow-hidden" contentClassName="relative p-4 sm:p-6">
       <div className="max-w-5xl mx-auto">
@@ -459,7 +490,7 @@ export default function Habits() {
             >
               Dashboard
             </Link>
-            
+
             <Link
               to="/history"
               className="rounded-xl border border-white/14
@@ -470,6 +501,7 @@ export default function Habits() {
             >
               History
             </Link>
+
             <button
               onClick={onLogout}
               className="rounded-xl border border-white/14
@@ -537,7 +569,8 @@ export default function Habits() {
                     const sType: HabitScheduleType = h?.schedule?.type ?? "daily";
                     const sDays: number[] = h?.schedule?.daysOfWeek ?? [];
                     const sched = scheduleSummary(sType, sDays);
-                    const rem = reminderSummary(h?.reminders);
+
+                    const dueToday = isDueTodayLocal(h, weekdayLocal);
 
                     return (
                       <div
@@ -554,12 +587,15 @@ export default function Habits() {
                             >
                               {h.name}
                             </Link>
-                            <div className="mt-1 text-xs text-white/60">Active</div>
+
+                            <div className="mt-1 flex flex-wrap items-center gap-2">
+                              <span className="text-xs text-white/60">Active</span>
+                              {duePill(dueToday)}
+                              {reminderPill(h?.reminders)}
+                            </div>
 
                             <div className="mt-2 text-xs text-white/45">
                               Schedule: <span className="text-white/70">{sched}</span>
-                              <span className="mx-2 text-white/30">•</span>
-                              Reminder: <span className="text-white/70">{rem}</span>
                             </div>
                           </div>
 
@@ -659,11 +695,7 @@ export default function Habits() {
             ? false
             : Boolean(((schedule as any)?.reminder?.enabled ?? (schedule as any)?.reminders?.enabled ?? false))
         }
-        initialReminderTime={
-          scheduleLoading
-            ? "09:00"
-            : String(((schedule as any)?.reminder?.time ?? (schedule as any)?.reminders?.time ?? "09:00"))
-        }
+        initialReminderTime={scheduleLoading ? "09:00" : String(((schedule as any)?.reminder?.time ?? (schedule as any)?.reminders?.time ?? "09:00"))}
         onSave={saveSchedule}
         saving={savingSchedule}
       />
@@ -672,5 +704,5 @@ export default function Habits() {
 }
 
 // ==========================
-// End of Version 8 — src/pages/Habits.tsx
+// End of Version 10 — src/pages/Habits.tsx
 // ==========================

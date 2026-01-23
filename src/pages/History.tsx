@@ -1,10 +1,12 @@
 // ==========================
-// Version 7 — src/pages/History.tsx
-// - v6 + links Per-habit streak rows to Habit Details (/habits/:habitId)
-//   * Click row -> navigate to details for drill-down + editing
+// Version 8 — src/pages/History.tsx
+// - v7 + Reminder Logs panel (read-only)
+//   * Reads users/{uid}/reminderLogs (latest first)
+//   * Filter: All / Exact / Digest
+//   * Shows sentAt, type, habit, dateKey, atHM, tz, success/failure
 // - Keeps heatmap + analytics logic unchanged
 // ==========================
-import React, { useMemo, useState } from "react";
+import React, { useMemo, useState, useEffect } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import Scene from "../components/Scene";
 import { useAuth } from "../auth/AuthProvider";
@@ -16,6 +18,16 @@ import {
 } from "../utils/history";
 import { dateKeyFromDate, weekday1to7 } from "../utils/dateKey";
 import { isDueOnDateKey } from "../utils/eligibility";
+
+import { db } from "../firebase/client";
+import {
+  collection,
+  query,
+  orderBy,
+  limit,
+  onSnapshot,
+  type DocumentData,
+} from "firebase/firestore";
 
 function initials(email?: string | null) {
   if (!email) return "U";
@@ -293,6 +305,197 @@ function MonthCalendar({
     </div>
   );
 }
+
+// ===== Reminder Logs (NEW) =====
+type ReminderLogType = "exact" | "digest";
+type ReminderLogRow = {
+  id: string;
+  type?: ReminderLogType;
+  habitId?: string;
+  habitName?: string;
+  dateKey?: string;
+  atHM?: string;
+  tz?: string;
+  success?: number;
+  failure?: number;
+  sentAt?: any; // Firestore Timestamp
+  logId?: string;
+};
+
+function formatSentAt(ts: any): string {
+  try {
+    if (!ts) return "—";
+    const d: Date =
+      typeof ts?.toDate === "function" ? ts.toDate() : ts instanceof Date ? ts : new Date(ts);
+    if (Number.isNaN(d.getTime())) return "—";
+    return d.toLocaleString(undefined, {
+      year: "numeric",
+      month: "short",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  } catch {
+    return "—";
+  }
+}
+
+function badgeType(t?: ReminderLogType) {
+  const base = "inline-flex items-center rounded-full border px-2.5 py-1 text-[11px] font-semibold";
+  if (t === "exact") return <span className={`${base} border-indigo-400/25 bg-indigo-500/10 text-indigo-200`}>Exact</span>;
+  if (t === "digest") return <span className={`${base} border-emerald-400/25 bg-emerald-500/10 text-emerald-200`}>Digest</span>;
+  return <span className={`${base} border-white/12 bg-white/[0.04] text-white/55`}>—</span>;
+}
+
+function ReminderLogsCard({ uid }: { uid: string | null }) {
+  const [filter, setFilter] = useState<"all" | "exact" | "digest">("all");
+  const [rows, setRows] = useState<ReminderLogRow[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!uid) {
+      setRows([]);
+      setErr(null);
+      return;
+    }
+
+    setLoading(true);
+    setErr(null);
+
+    const colRef = collection(db as any, "users", uid, "reminderLogs");
+    const q = query(colRef, orderBy("sentAt", "desc"), limit(60));
+
+    const unsub = onSnapshot(
+      q,
+      (snap) => {
+        const next: ReminderLogRow[] = snap.docs.map((d) => {
+          const data = d.data() as DocumentData;
+          return { id: d.id, ...(data as any) };
+        });
+        setRows(next);
+        setLoading(false);
+      },
+      (e: any) => {
+        setLoading(false);
+        setErr(e?.message ? String(e.message) : "Could not load reminder logs.");
+      }
+    );
+
+    return () => unsub();
+  }, [uid]);
+
+  const visible = useMemo(() => {
+    if (filter === "all") return rows;
+    return rows.filter((r) => r.type === filter);
+  }, [rows, filter]);
+
+  return (
+    <DarkCard
+      title="Reminder logs"
+      subtitle="Read-only — what the scheduler actually sent"
+      right={
+        <div className="flex items-center gap-2">
+          {(["all", "exact", "digest"] as const).map((k) => {
+            const active = filter === k;
+            return (
+              <button
+                key={k}
+                type="button"
+                onClick={() => setFilter(k)}
+                className={`rounded-xl border px-3 py-2 text-xs font-semibold backdrop-blur-2xl transition
+                  ${
+                    active
+                      ? "border-white/30 bg-white/[0.10] text-white ring-2 ring-white/25"
+                      : "border-white/14 bg-white/[0.05] text-white/70 hover:bg-white/[0.10] hover:text-white/85"
+                  }`}
+              >
+                {k === "all" ? "All" : k === "exact" ? "Exact" : "Digest"}
+              </button>
+            );
+          })}
+        </div>
+      }
+    >
+      {loading ? (
+        <div className="text-sm text-white/70">Loading…</div>
+      ) : err ? (
+        <div className="rounded-xl border border-rose-400/20 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
+          {err}
+          <div className="mt-2 text-xs text-white/55">
+            If this is “permission-denied”, your Firestore rules need to allow reading
+            <span className="text-white/75"> users/{`{uid}`}/reminderLogs</span> for the owner.
+          </div>
+        </div>
+      ) : visible.length === 0 ? (
+        <div className="rounded-xl border border-dashed border-white/16 bg-black/10 px-4 py-5">
+          <p className="text-sm text-white/70">No logs yet.</p>
+          <p className="mt-2 text-xs text-white/50">
+            Trigger one: set a habit reminder to the next minute, or wait for the 16:00 digest (only if you have due habits).
+          </p>
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {visible.map((r) => {
+            const title =
+              r.type === "exact"
+                ? String(r.habitName ?? r.habitId ?? "Exact reminder")
+                : "Daily digest";
+            const meta = [
+              r.type === "digest" ? "16:00 digest" : r.atHM ? `at ${r.atHM}` : "—",
+              r.dateKey ? `date ${r.dateKey}` : null,
+              r.tz ? `tz ${r.tz}` : null,
+            ].filter(Boolean);
+
+            return (
+              <div
+                key={r.id}
+                className="rounded-xl border border-white/14 bg-white/[0.07] p-4 backdrop-blur-2xl
+                           shadow-[0_18px_55px_-50px_rgba(0,0,0,0.98)]
+                           flex items-center justify-between gap-3"
+              >
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <div className="text-sm font-semibold text-white truncate">{title}</div>
+                    {badgeType(r.type)}
+                    {r.type === "exact" && r.habitId ? (
+                      <Link
+                        to={`/habits/${r.habitId}`}
+                        className="text-[11px] text-white/55 hover:text-white/75 hover:underline underline-offset-4"
+                        title="Open habit"
+                      >
+                        open
+                      </Link>
+                    ) : null}
+                  </div>
+
+                  <div className="mt-1 text-xs text-white/55">
+                    {meta.join(" • ")}
+                    <span className="text-white/40"> • sent {formatSentAt(r.sentAt)}</span>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 shrink-0">
+                  <div className="rounded-xl border border-white/14 bg-white/[0.06] px-3 py-2 text-xs text-white/80">
+                    ✅ <span className="text-white font-semibold">{r.success ?? 0}</span>
+                  </div>
+                  <div className="rounded-xl border border-white/14 bg-white/[0.06] px-3 py-2 text-xs text-white/80">
+                    ⚠️ <span className="text-white font-semibold">{r.failure ?? 0}</span>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      <div className="mt-3 text-[11px] text-white/45">
+        Note: logs are written by Cloud Functions to help debug duplicates, timing, and delivery. They don’t guarantee the device displayed the notification.
+      </div>
+    </DarkCard>
+  );
+}
+// =============================
 
 export default function History() {
   const { user, logout } = useAuth();
@@ -768,6 +971,11 @@ export default function History() {
           </DarkCard>
         </div>
 
+        {/* NEW: Reminder logs */}
+        <div className="mt-4 sm:mt-5">
+          <ReminderLogsCard uid={uid} />
+        </div>
+
         <div className="mt-6 text-center text-xs text-white/45">
           Tip: Click a habit row above to open Habit Details and drill down 😎
         </div>
@@ -777,5 +985,5 @@ export default function History() {
 }
 
 // ==========================
-// End of Version 7 — src/pages/History.tsx
+// End of Version 8 — src/pages/History.tsx
 // ==========================

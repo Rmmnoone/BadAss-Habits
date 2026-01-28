@@ -1,9 +1,9 @@
 //----------------------------------//
-//    Version 5 - vite.config.ts    //
-// - InjectManifest (custom SW)     //
-// - Keeps predictable glob rules   //
-// - Removes workbox runtime config //
-//   (runtime behavior handled in sw.ts for InjectManifest)
+//    Version 8 - vite.config.ts    //
+// - ✅ InjectManifest (USES src/sw.ts)
+// - Manual registration preserved (injectRegister: null)
+// - Predictable precache rules (injectManifest.globPatterns)
+// - Fixes missing push notifications by ensuring SW has push handler
 //----------------------------------//
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
@@ -13,14 +13,16 @@ export default defineConfig({
   plugins: [
     react(),
     VitePWA({
+      // We register manually in src/main.tsx
+      injectRegister: null,
       registerType: "autoUpdate",
-      injectRegister: null, // we register manually in src/main.tsx
 
-      // ✅ Custom SW (src/sw.ts)
+      // ✅ IMPORTANT: use your custom SW (src/sw.ts)
       strategies: "injectManifest",
       srcDir: "src",
       filename: "sw.ts",
 
+      // ✅ Dev SW (useful for local testing)
       devOptions: {
         enabled: true,
         type: "module",
@@ -42,10 +44,9 @@ export default defineConfig({
         ],
       },
 
-      // ✅ Make InjectManifest behave predictably
+      // ✅ InjectManifest options (NOT workbox)
       injectManifest: {
         globPatterns: ["**/*.{js,css,html,ico,png,svg,woff2}"],
-        // Optional safety limit (prevents surprises if you add big assets later)
         maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
       },
     }),
@@ -53,5 +54,5 @@ export default defineConfig({
 });
 
 //----------------------------------//
-// End of Version 5 - vite.config.ts //
+// End of Version 8 - vite.config.ts //
 //----------------------------------//

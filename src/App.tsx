@@ -3,7 +3,7 @@
 // - Adds Habit Details route: /habits/:habitId
 // - Keeps existing routes + NotFound styling
 // ==========================
-import React from "react";
+
 import { BrowserRouter, Routes, Route, Navigate, Link } from "react-router-dom";
 
 import { AuthProvider } from "./auth/AuthProvider";

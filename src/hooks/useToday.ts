@@ -1,8 +1,8 @@
 // ==========================
-// Version 3 — src/hooks/useToday.ts
-// - Refactor: removes duplicated due logic (uses utils/eligibility.ts)
-// - Keeps reminder fields + sorting behavior
-// - Optional pre-start support via habit.createdAt -> minDateKey
+// Version 4 — src/hooks/useToday.ts
+// - v3 + Sanitizes reminderTime from habit doc:
+//   * if invalid => "09:00" (prevents broken sorting / UI)
+// - Keeps eligibility + sorting behavior
 // ==========================
 import { useEffect, useMemo, useState } from "react";
 import { onSnapshot, type FirestoreError } from "firebase/firestore";
@@ -19,8 +19,18 @@ export type TodayItem = {
   done: boolean;
 
   reminderEnabled: boolean;
-  reminderTime: string; // "HH:mm" (defaults to "09:00")
+  reminderTime: string; // "HH:mm"
 };
+
+function isValidHHMM(s: any): boolean {
+  if (typeof s !== "string") return false;
+  return /^([01]\d|2[0-3]):([0-5]\d)$/.test(s);
+}
+
+function safeHHMM(s: any, fallback = "09:00"): string {
+  const v = typeof s === "string" ? s : "";
+  return isValidHHMM(v) ? v : fallback;
+}
 
 function timeToMinutes(t: string): number {
   const [hh, mm] = (t || "09:00").split(":");
@@ -82,7 +92,7 @@ export function useToday(uid?: string | null) {
       const done = doneSet.has(h.id);
 
       const reminderEnabled = Boolean(h?.reminders?.enabled);
-      const reminderTime = String(h?.reminders?.time ?? "09:00");
+      const reminderTime = safeHHMM(h?.reminders?.time, "09:00");
 
       return {
         id: h.id,
@@ -119,5 +129,5 @@ export function useToday(uid?: string | null) {
 }
 
 // ==========================
-// End of Version 3 — src/hooks/useToday.ts
+// End of Version 4 — src/hooks/useToday.ts
 // ==========================

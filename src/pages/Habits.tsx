@@ -1,10 +1,10 @@
 // ==========================
-// Version 10 — src/pages/Habits.tsx
-// - v9 + Reminder copy aligned with live Push scheduler (UI-only):
-//   * Updates ScheduleModal reminder help text:
-//     - Exact reminders at habit time (if enabled)
-//     - Daily digest at 16:00 if ≥1 due habit
-//   * Keeps reminder pill + due-today pill behavior unchanged
+// Version 12 — src/pages/Habits.tsx
+// - v11 + Hardens <input type="time"> edge cases:
+//   * Tracks lastValidTime (HH:mm)
+//   * onBlur snaps invalid partial values (e.g. ":21") back to last valid / default
+//   * Ensures initialReminderTime is sanitized before seeding state
+// - Keeps Save disabled if reminder ON + invalid time
 // ==========================
 import React, { useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
@@ -125,6 +125,16 @@ function duePill(due: boolean) {
   );
 }
 
+function isValidHHMM(s: any): boolean {
+  if (typeof s !== "string") return false;
+  return /^([01]\d|2[0-3]):([0-5]\d)$/.test(s);
+}
+
+function safeHHMM(s: any, fallback = "09:00"): string {
+  const v = typeof s === "string" ? s : "";
+  return isValidHHMM(v) ? v : fallback;
+}
+
 function ScheduleModal({
   open,
   onClose,
@@ -142,7 +152,7 @@ function ScheduleModal({
   initialType: HabitScheduleType;
   initialDays: number[];
   initialReminderEnabled: boolean;
-  initialReminderTime: string; // "HH:MM"
+  initialReminderTime: string; // "HH:mm"
   onSave: (next: {
     type: HabitScheduleType;
     daysOfWeek: number[];
@@ -154,30 +164,34 @@ function ScheduleModal({
   const [days, setDays] = useState<number[]>(initialDays);
 
   const [remEnabled, setRemEnabled] = useState<boolean>(initialReminderEnabled);
-  const [remTime, setRemTime] = useState<string>(initialReminderTime || "09:00");
+
+  // time input can emit partial values in some browsers; keep lastValidTime to recover on blur
+  const [remTime, setRemTime] = useState<string>(safeHHMM(initialReminderTime, "09:00"));
+  const [lastValidTime, setLastValidTime] = useState<string>(safeHHMM(initialReminderTime, "09:00"));
 
   React.useEffect(() => {
     if (!open) return;
-    console.log("[ScheduleModal] open for:", habitName, {
-      initialType,
-      initialDays,
-      initialReminderEnabled,
-      initialReminderTime,
-    });
 
     setType(initialType);
     setDays(initialDays);
 
+    const seed = safeHHMM(initialReminderTime, "09:00");
     setRemEnabled(Boolean(initialReminderEnabled));
-    setRemTime(initialReminderTime || "09:00");
+    setRemTime(seed);
+    setLastValidTime(seed);
   }, [open, habitName, initialType, initialDays, initialReminderEnabled, initialReminderTime]);
+
+  const reminderInvalid = useMemo(() => {
+    if (!remEnabled) return false;
+    return !isValidHHMM(remTime);
+  }, [remEnabled, remTime]);
 
   const canSave = useMemo(() => {
     if (saving) return false;
     if (type === "weekly" && days.length === 0) return false;
-    if (remEnabled && !remTime) return false;
+    if (remEnabled && reminderInvalid) return false;
     return true;
-  }, [type, days, saving, remEnabled, remTime]);
+  }, [type, days, saving, remEnabled, reminderInvalid]);
 
   function toggleDay(n: number) {
     setDays((prev) => (prev.includes(n) ? prev.filter((x) => x !== n) : [...prev, n]));
@@ -253,9 +267,7 @@ function ScheduleModal({
             </div>
 
             {/* Days */}
-            <div
-              className={`rounded-xl border border-white/14 bg-white/[0.05] p-4 ${daysDisabled ? "opacity-75" : ""}`}
-            >
+            <div className={`rounded-xl border border-white/14 bg-white/[0.05] p-4 ${daysDisabled ? "opacity-75" : ""}`}>
               <div className="text-xs font-semibold text-white/75 mb-3">Days of week</div>
 
               <div className="flex flex-wrap gap-2">
@@ -298,7 +310,11 @@ function ScheduleModal({
 
                 <button
                   type="button"
-                  onClick={() => setRemEnabled((x) => !x)}
+                  onClick={() => {
+                    setRemEnabled((x) => !x);
+                    // if toggling ON while current value is invalid, restore last valid immediately
+                    setRemTime((cur) => (isValidHHMM(cur) ? cur : lastValidTime || "09:00"));
+                  }}
                   className={`rounded-xl border px-4 py-2 text-sm font-semibold backdrop-blur-2xl transition
                     ${
                       remEnabled
@@ -316,15 +332,30 @@ function ScheduleModal({
                   type="time"
                   disabled={!remEnabled}
                   value={remTime}
-                  onChange={(e) => setRemTime(e.target.value)}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    setRemTime(v);
+                    if (isValidHHMM(v)) setLastValidTime(v);
+                  }}
+                  onBlur={() => {
+                    // Snap back to last valid if user leaves the field with an invalid partial value
+                    if (!remEnabled) return;
+                    if (!isValidHHMM(remTime)) setRemTime(lastValidTime || "09:00");
+                  }}
                   className="w-full rounded-xl border border-white/14 bg-white/[0.08] px-4 py-3 text-sm text-white outline-none
                              placeholder:text-white/35
                              focus:border-white/22 focus:ring-4 focus:ring-white/10
                              disabled:cursor-not-allowed"
                 />
                 <div className="mt-2 text-xs text-white/45">
-                  Stored as <span className="text-white/70">HH:MM</span> in your local time.
+                  Stored as <span className="text-white/70">HH:mm</span> in your local time.
                 </div>
+
+                {remEnabled && reminderInvalid ? (
+                  <div className="mt-2 rounded-xl border border-rose-400/20 bg-rose-500/10 px-4 py-3 text-xs text-rose-200">
+                    Invalid time. Please choose a valid <span className="font-semibold">HH:mm</span> (e.g. 09:00).
+                  </div>
+                ) : null}
               </div>
             </div>
 
@@ -333,15 +364,11 @@ function ScheduleModal({
               type="button"
               disabled={!canSave}
               onClick={() => {
-                console.log("[ScheduleModal] save clicked:", {
-                  type,
-                  daysOfWeek: days,
-                  reminder: { enabled: remEnabled, time: remTime || "09:00" },
-                });
+                const safeTime = safeHHMM(remTime, lastValidTime || "09:00");
                 onSave({
                   type,
                   daysOfWeek: days,
-                  reminder: { enabled: remEnabled, time: remTime || "09:00" },
+                  reminder: { enabled: remEnabled, time: safeTime },
                 });
               }}
               className="w-full rounded-xl border border-white/14 bg-white/[0.10] px-4 py-3 text-sm font-semibold text-white
@@ -381,13 +408,11 @@ export default function Habits() {
   const { schedule, loading: scheduleLoading } = useHabitSchedule(uid, scheduleHabitId);
 
   function openSchedule(habitId: string, habitName: string) {
-    console.log("[Habits] openSchedule:", { habitId, habitName });
     setScheduleHabitId(habitId);
     setScheduleHabitName(habitName);
   }
 
   function closeSchedule() {
-    console.log("[Habits] closeSchedule");
     setScheduleHabitId(null);
     setScheduleHabitName("");
   }
@@ -443,8 +468,7 @@ export default function Habits() {
   }
 
   const weekdayLocal = useMemo(() => {
-    // Monday=1..Sunday=7
-    const js = new Date().getDay(); // Sun=0..Sat=6
+    const js = new Date().getDay();
     return js === 0 ? 7 : js;
   }, []);
 
@@ -677,13 +701,9 @@ export default function Habits() {
           </GlassCard>
         </div>
 
-        <div className="mt-6 text-center text-xs text-white/45">
-          Tip: Use “View” to backfill past days. Future days are locked.
-        </div>
+        <div className="mt-6 text-center text-xs text-white/45">Tip: Use “View” to backfill past days. Future days are locked.</div>
       </div>
 
-      {/* The modal reads initial reminder settings from schedule/main when possible.
-          If not present yet, it falls back to safe defaults. */}
       <ScheduleModal
         open={Boolean(scheduleHabitId)}
         onClose={closeSchedule}
@@ -691,11 +711,11 @@ export default function Habits() {
         initialType={scheduleLoading ? "daily" : ((schedule as any)?.type ?? "daily")}
         initialDays={scheduleLoading ? [1, 2, 3, 4, 5] : ((schedule as any)?.daysOfWeek ?? [1, 2, 3, 4, 5])}
         initialReminderEnabled={
-          scheduleLoading
-            ? false
-            : Boolean(((schedule as any)?.reminder?.enabled ?? (schedule as any)?.reminders?.enabled ?? false))
+          scheduleLoading ? false : Boolean(((schedule as any)?.reminder?.enabled ?? (schedule as any)?.reminders?.enabled ?? false))
         }
-        initialReminderTime={scheduleLoading ? "09:00" : String(((schedule as any)?.reminder?.time ?? (schedule as any)?.reminders?.time ?? "09:00"))}
+        initialReminderTime={
+          scheduleLoading ? "09:00" : String(((schedule as any)?.reminder?.time ?? (schedule as any)?.reminders?.time ?? "09:00"))
+        }
         onSave={saveSchedule}
         saving={savingSchedule}
       />
@@ -704,5 +724,5 @@ export default function Habits() {
 }
 
 // ==========================
-// End of Version 10 — src/pages/Habits.tsx
+// End of Version 12 — src/pages/Habits.tsx
 // ==========================

@@ -7,7 +7,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { db } from "../firebase/client";
 import { getDoneMapForRange } from "../firebase/checkins";
-import { lastNDaysKeys } from "../utils/datekey";
+import { lastNDaysKeys } from "../utils/dateKey";
 
 /**
  * minDateKey: YYYY-MM-DD (inclusive). Any keys older than this are removed.

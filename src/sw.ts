@@ -1,84 +1,91 @@
 // ==========================
-// Version 2 — src/sw.ts
-// - Adds debug logs for push payload + errors
-// - Still shows notification even if payload is empty
-// - Click focuses/opens app (same as v1)
+// Version 5 — src/sw.ts
+// - Fixes TS build errors:
+//   * Avoids NotificationAction type (not in some TS DOM libs)
+//   * Uses a safe cast for renotify/requireInteraction/tag/actions
+// - Still honors FCM data options: tag, renotify, requireInteraction
+// - Keeps Workbox InjectManifest precache
 // ==========================
 
 /// <reference lib="webworker" />
 
-declare const self: ServiceWorkerGlobalScope;
+import { precacheAndRoute, cleanupOutdatedCaches } from "workbox-precaching";
 
-function pickNotificationPayload(data: any) {
-  const notif = data?.notification ?? data?.data?.notification ?? null;
+declare const self: ServiceWorkerGlobalScope & {
+  __WB_MANIFEST: Array<any>;
+};
 
-  const title =
-    notif?.title ??
-    data?.title ??
-    data?.data?.title ??
-    "BadAss Habits";
+cleanupOutdatedCaches();
+precacheAndRoute(self.__WB_MANIFEST);
 
-  const body =
-    notif?.body ??
-    data?.body ??
-    data?.data?.body ??
-    "";
+type RawPayload = any;
 
-  const url =
-    data?.data?.url ??
-    data?.fcmOptions?.link ??
-    data?.notification?.click_action ??
-    "/";
+function asBool(v: any): boolean {
+  if (typeof v === "boolean") return v;
+  if (typeof v === "string") return v === "true";
+  return false;
+}
 
-  return { title, body, url };
+function pickPayload(payload: RawPayload) {
+  // FCM often wraps as { data: { ... } }
+  const d = payload?.data ?? payload ?? {};
+
+  const title = String(d.title ?? payload?.title ?? "BadAss Habits");
+  const body = String(d.body ?? payload?.body ?? "");
+  const url = String(d.url ?? payload?.fcmOptions?.link ?? "/");
+
+  const tag = String(d.tag ?? "");
+  const renotify = asBool(d.renotify);
+  const requireInteraction = asBool(d.requireInteraction);
+
+  // keep as unknown[] to avoid DOM typing issues
+  const actions: any[] = [];
+
+  return { title, body, url, tag, renotify, requireInteraction, actions };
 }
 
 self.addEventListener("push", (event) => {
   const show = async () => {
-    let data: any = null;
-    let rawText: string | null = null;
-
+    let payload: any = {};
     try {
-      if (event?.data) {
-        try {
-          data = event.data.json();
-        } catch {
-          rawText = event.data.text();
-          // best-effort parse
-          try {
-            data = JSON.parse(rawText);
-          } catch {
-            data = { body: rawText };
-          }
-        }
+      payload = event?.data ? event.data.json() : {};
+    } catch {
+      try {
+        const raw = event?.data ? await event.data.text() : "";
+        payload = raw ? JSON.parse(raw) : {};
+      } catch {
+        payload = {};
       }
-    } catch (e) {
-      // eslint-disable-next-line no-console
-      console.log("[SW] push parse error:", e);
-      data = null;
     }
 
     // eslint-disable-next-line no-console
-    console.log("[SW] push received", {
-      hasData: Boolean(event?.data),
-      rawText,
-      data,
-    });
+    console.log("[SW] push received", payload);
 
-    const { title, body, url } = pickNotificationPayload(data);
+    const { title, body, url, tag, renotify, requireInteraction, actions } = pickPayload(payload);
 
-    await self.registration.showNotification(title, {
+    // Some TS DOM libs don't include renotify/requireInteraction/tag/actions
+    // Runtime supports them, so we cast to any for build.
+    const opts: any = {
       body,
       data: { url },
-    });
+      icon: "/pwa-192.png",
+      badge: "/pwa-192.png",
+
+      tag: tag || undefined,
+      renotify: tag ? renotify : false,
+      requireInteraction: Boolean(requireInteraction),
+
+      actions: actions.length ? actions : undefined,
+    };
+
+    await self.registration.showNotification(title, opts);
   };
 
-  event?.waitUntil(show());
+  event.waitUntil(show());
 });
 
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
-
   const url = (event.notification?.data as any)?.url ?? "/";
 
   event.waitUntil(
@@ -89,9 +96,17 @@ self.addEventListener("notificationclick", (event) => {
       });
 
       for (const client of allClients) {
-        if ("focus" in client) {
-          await client.focus();
-          return;
+        try {
+          if ("focus" in client) {
+            const w = client as WindowClient;
+            await w.focus();
+            if ("navigate" in w) {
+              await w.navigate(url);
+            }
+            return;
+          }
+        } catch {
+          // ignore
         }
       }
 
@@ -101,5 +116,5 @@ self.addEventListener("notificationclick", (event) => {
 });
 
 // ==========================
-// End of Version 2 — src/sw.ts
+// End of Version 5 — src/sw.ts
 // ==========================

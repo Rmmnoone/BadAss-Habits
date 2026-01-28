@@ -1,11 +1,9 @@
 // ==========================
-// Version 17 — src/pages/Dashboard.tsx
-// - v16 + Reminder clarity on Dashboard (UI-only, NO logic changes):
-//   * Replaces misleading “only works while app is open” copy (push is now live)
-//   * Adds "Reminders" helper text: exact reminders + 16:00 digest rule
-//   * Adds Next reminder (earliest HH:MM among due habits with reminders enabled)
-//   * Improves Reminder pill: shows ⏰ Off optionally, keeps existing ⏰ time
-//   * Updates placeholder Insights list to reflect current reality
+// Version 18 — src/pages/Dashboard.tsx
+// - v17 + Test push button (calls Cloud Function sendTestPush):
+//   * Adds "Send test push" action (only when permission is granted)
+//   * Shows success/failure status message with logId
+//   * No logic changes to reminders scheduling / insights
 // ==========================
 import React, { useEffect, useMemo, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
@@ -18,7 +16,7 @@ import { useHabits } from "../hooks/useHabits";
 import { lastNDaysKeys } from "../utils/dateKey";
 import { isDueOnDateKey } from "../utils/eligibility";
 import { useReminderScheduler } from "../hooks/useReminderScheduler";
-import { enablePushForUser } from "../utils/push";
+import { enablePushForUser, sendTestPush } from "../utils/push";
 
 function initials(email?: string | null) {
   if (!email) return "U";
@@ -63,9 +61,7 @@ function DarkCard({
         <div className="relative p-5 sm:p-6">
           <div className="flex items-start justify-between gap-3">
             <div>
-              <h2 className="text-base sm:text-lg font-semibold tracking-tight text-white">
-                {title}
-              </h2>
+              <h2 className="text-base sm:text-lg font-semibold tracking-tight text-white">{title}</h2>
               {subtitle ? <p className="mt-1 text-sm text-white/70">{subtitle}</p> : null}
             </div>
             {right ? <div className="shrink-0">{right}</div> : null}
@@ -107,8 +103,7 @@ function permissionLabel(p: NotificationPermission | "unsupported") {
 function permissionHelp(p: NotificationPermission | "unsupported") {
   if (p === "granted") return "Enabled. Push reminders can arrive even when the app is closed.";
   if (p === "default") return "Click to enable.";
-  if (p === "denied")
-    return "Blocked by browser. You must re-enable in Chrome Site settings (Notifications).";
+  if (p === "denied") return "Blocked by browser. You must re-enable in Chrome Site settings (Notifications).";
   return "Notifications not supported here.";
 }
 
@@ -127,6 +122,12 @@ type PushUiState =
   | { status: "idle"; msg?: string }
   | { status: "working"; msg: string }
   | { status: "enabled"; msg: string }
+  | { status: "error"; msg: string };
+
+type TestUiState =
+  | { status: "idle"; msg?: string }
+  | { status: "working"; msg: string }
+  | { status: "success"; msg: string }
   | { status: "error"; msg: string };
 
 export default function Dashboard() {
@@ -168,6 +169,9 @@ export default function Dashboard() {
 
   // Push enable UI state (FCM)
   const [pushUi, setPushUi] = useState<PushUiState>({ status: "idle" });
+
+  // Test push UI state
+  const [testUi, setTestUi] = useState<TestUiState>({ status: "idle" });
 
   // Local debug state snapshot
   const [debugSnap, setDebugSnap] = useState<Record<string, any>>({});
@@ -212,15 +216,14 @@ export default function Dashboard() {
     console.log("[Dashboard] EnableNotifications clicked");
     console.log("[Dashboard] before:", readDebugSnapshot());
 
+    setTestUi({ status: "idle" });
+
     if (!notifSupported) {
       setPushUi({ status: "error", msg: "Notifications API unsupported in this browser." });
       return;
     }
     if (!secureContext) {
-      setPushUi({
-        status: "error",
-        msg: "Push notifications require HTTPS (or localhost).",
-      });
+      setPushUi({ status: "error", msg: "Push notifications require HTTPS (or localhost)." });
       return;
     }
     if (!uid) return;
@@ -265,6 +268,25 @@ export default function Dashboard() {
     }
   }
 
+  async function sendTestPushClick() {
+    if (!uid) return;
+
+    setTestUi({ status: "working", msg: "Sending test push…" });
+
+    try {
+      const res: any = await sendTestPush();
+
+      if (res?.ok) {
+        const msg = `Sent ✅ (success ${res.success}, failure ${res.failure}) • log: ${res.logId}`;
+        setTestUi({ status: "success", msg });
+      } else {
+        setTestUi({ status: "error", msg: res?.reason ?? "Test push failed." });
+      }
+    } catch (e: any) {
+      setTestUi({ status: "error", msg: e?.message ? String(e.message) : "Test push failed." });
+    }
+  }
+
   const stats = useMemo(() => {
     const activeHabitsCount = items.length;
     const dueCount = dueItems.length;
@@ -273,7 +295,7 @@ export default function Dashboard() {
     return { activeHabitsCount, dueCount, doneCount, todayConsistency };
   }, [items, dueItems]);
 
-  // NEW: Next reminder (earliest HH:MM among today’s due habits with reminders enabled)
+  // Next reminder (earliest HH:MM among today’s due habits with reminders enabled)
   const nextReminderHM = useMemo(() => {
     const times = (dueItems as any[])
       .filter((h) => Boolean(h?.reminderEnabled) && isValidHHMM(h?.reminderTime))
@@ -390,6 +412,9 @@ export default function Dashboard() {
   const pushButtonDisabled =
     !notifSupported || pushUi.status === "working" || notifStatus === "denied" || !uid;
 
+  const testButtonDisabled =
+    !uid || notifStatus !== "granted" || testUi.status === "working" || pushUi.status === "working";
+
   return (
     <Scene className="min-h-screen relative overflow-hidden" contentClassName="relative p-4 sm:p-6">
       <div className="max-w-5xl mx-auto">
@@ -493,30 +518,58 @@ export default function Dashboard() {
                 {pushUi.msg}
               </div>
             ) : null}
+
+            {testUi.status !== "idle" ? (
+              <div
+                className={`mt-2 text-[11px] ${
+                  testUi.status === "success"
+                    ? "text-emerald-300/90"
+                    : testUi.status === "error"
+                    ? "text-rose-300/90"
+                    : "text-white/55"
+                }`}
+              >
+                {testUi.msg}
+              </div>
+            ) : null}
           </div>
 
-          <button
-            type="button"
-            onClick={enableNotificationsClick}
-            disabled={pushButtonDisabled}
-            className={`relative inline-flex h-9 w-24 items-center rounded-full border transition
-              ${
-                notifStatus === "granted"
-                  ? "border-white/20 bg-white/[0.16]"
-                  : "border-white/14 bg-white/[0.08] hover:bg-white/[0.12]"
-              }
-              disabled:opacity-60`}
-            aria-label="Enable notifications"
-            title={!notifSupported ? "Notifications unsupported" : undefined}
-          >
-            <span
-              className={`absolute left-1 top-1 h-7 w-7 rounded-full transition
-                ${notifStatus === "granted" ? "translate-x-[56px] bg-white/80" : "translate-x-0 bg-white/55"}`}
-            />
-            <span className="w-full text-center text-[11px] font-semibold text-white/80">
-              {pushUi.status === "working" ? "…" : permissionLabel(notifStatus)}
-            </span>
-          </button>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={sendTestPushClick}
+              disabled={testButtonDisabled}
+              className="rounded-xl border border-white/14 bg-white/[0.08] px-4 py-2 text-sm font-semibold text-white/90
+                         hover:bg-white/[0.12] disabled:opacity-60 disabled:hover:bg-white/[0.08]
+                         shadow-[0_18px_55px_-45px_rgba(0,0,0,0.98)]"
+              title={notifStatus !== "granted" ? "Enable push first" : "Sends a test push and writes a log entry"}
+            >
+              {testUi.status === "working" ? "Sending…" : "Send test push"}
+            </button>
+
+            <button
+              type="button"
+              onClick={enableNotificationsClick}
+              disabled={pushButtonDisabled}
+              className={`relative inline-flex h-9 w-24 items-center rounded-full border transition
+                ${
+                  notifStatus === "granted"
+                    ? "border-white/20 bg-white/[0.16]"
+                    : "border-white/14 bg-white/[0.08] hover:bg-white/[0.12]"
+                }
+                disabled:opacity-60`}
+              aria-label="Enable notifications"
+              title={!notifSupported ? "Notifications unsupported" : undefined}
+            >
+              <span
+                className={`absolute left-1 top-1 h-7 w-7 rounded-full transition
+                  ${notifStatus === "granted" ? "translate-x-[56px] bg-white/80" : "translate-x-0 bg-white/55"}`}
+              />
+              <span className="w-full text-center text-[11px] font-semibold text-white/80">
+                {pushUi.status === "working" ? "…" : permissionLabel(notifStatus)}
+              </span>
+            </button>
+          </div>
         </div>
 
         {/* Debug panel */}
@@ -554,9 +607,7 @@ export default function Dashboard() {
               ) : dueItems.length === 0 ? (
                 <div className="rounded-xl border border-dashed border-white/16 bg-black/10 px-4 py-5">
                   <p className="text-sm text-white/70">No habits due today.</p>
-                  <p className="mt-2 text-xs text-white/50">
-                    If you haven’t set schedules yet, go to Habits → Schedule.
-                  </p>
+                  <p className="mt-2 text-xs text-white/50">If you haven’t set schedules yet, go to Habits → Schedule.</p>
                 </div>
               ) : (
                 <div className="space-y-2">
@@ -583,9 +634,7 @@ export default function Dashboard() {
                             <StreakPill n={streak} />
                           </div>
 
-                          <div className="mt-1 text-xs text-white/55">
-                            {h.done ? "Done ✅" : "Not done yet"}
-                          </div>
+                          <div className="mt-1 text-xs text-white/55">{h.done ? "Done ✅" : "Not done yet"}</div>
                         </div>
 
                         <button
@@ -624,8 +673,7 @@ export default function Dashboard() {
                   { label: "7d consistency", value: insightsLoading ? "…" : consistency7d },
                   {
                     label: "Best streak",
-                    value:
-                      insightsLoading ? "…" : bestCurrentStreak == null ? "—" : String(bestCurrentStreak),
+                    value: insightsLoading ? "…" : bestCurrentStreak == null ? "—" : String(bestCurrentStreak),
                   },
                   { label: "Today rate", value: stats.todayConsistency },
                   { label: "Push", value: permissionLabel(notifStatus) },
@@ -641,9 +689,7 @@ export default function Dashboard() {
                 ))}
               </div>
 
-              <div className="mt-3 text-[11px] text-white/45">
-                Note: streaks are computed from the last 60 days (MVP).
-              </div>
+              <div className="mt-3 text-[11px] text-white/45">Note: streaks are computed from the last 60 days (MVP).</div>
             </DarkCard>
           </div>
         </div>
@@ -715,5 +761,5 @@ export default function Dashboard() {
 }
 
 // ==========================
-// End of Version 17 — src/pages/Dashboard.tsx
+// End of Version 18 — src/pages/Dashboard.tsx
 // ==========================

@@ -1,12 +1,11 @@
 // ==========================
-// Version 3 — src/firebase/client.ts
-// - Firebase client init (Auth + Firestore)
-// - Reads config from .env.local (Vite)
-// - Exports `app` for FCM Messaging usage
+// Version 4 — src/firebase/client.ts
+// - v3 + Functions export for callable test push
 // ==========================
 import { initializeApp } from "firebase/app";
 import { getAuth } from "firebase/auth";
 import { getFirestore } from "firebase/firestore";
+import { getFunctions } from "firebase/functions";
 
 const firebaseConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY as string,
@@ -23,6 +22,9 @@ export const app = initializeApp(firebaseConfig);
 export const auth = getAuth(app);
 export const db = getFirestore(app);
 
+// ✅ Cloud Functions (callable)
+export const functions = getFunctions(app, "europe-west2");
+
 // ==========================
-// End of Version 3 — src/firebase/client.ts
+// End of Version 4 — src/firebase/client.ts
 // ==========================

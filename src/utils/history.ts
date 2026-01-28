@@ -1,8 +1,9 @@
 // ==========================
-// Version 2 — src/utils/history.ts
-// - Refactor: removes duplicate dateKey helpers (uses utils/dateKey.ts)
-// - Refactor: removes duplicate due logic (uses utils/eligibility.ts)
+// Version 3 — src/utils/history.ts
+// - Fixes TS build (noUnusedLocals):
+//   * weekdayMapForKeys now returns real weekday numbers (1=Mon..7=Sun)
 // - Keeps streak + rate calculations over a window
+// - Uses utils/dateKey.ts + utils/eligibility.ts (no duplicate helpers)
 // - Optional minDateKey support (pre-start days won't count as due)
 // ==========================
 
@@ -16,17 +17,16 @@ export function lastNDaysKeysAsc(n: number): string[] {
 
 /**
  * Build weekday map for date keys.
+ * Returns 1..7 (Mon..Sun) for each YYYY-MM-DD key.
  * Uses DST-safe dateFromKey() to avoid edge cases.
  */
 export function weekdayMapForKeys(keys: string[]): Map<string, number> {
   const map = new Map<string, number>();
   for (const k of keys) {
     const d = dateFromKey(k);
-    // weekday1to7 is used inside eligibility.ts; we don't need it here anymore.
-    // But if you still want weekday numbers for UI/debug, you can compute them externally.
-    // We'll store JS getDay() mapping here only if needed later; for now keep it simple:
-    // (Not used in this module anymore)
-    map.set(k, 0);
+    const js = d.getDay(); // Sun=0..Sat=6
+    const weekday1to7 = js === 0 ? 7 : js; // Mon=1..Sun=7
+    map.set(k, weekday1to7);
   }
   return map;
 }
@@ -71,7 +71,6 @@ export function computeHabitWindowStats(args: {
 
   const minDateKey = args.minDateKey ?? minDateKeyFromHabit(habit);
 
-  // due/done counts
   let dueCount = 0;
   let doneCount = 0;
 
@@ -143,8 +142,7 @@ export function computeOverallWindowStats(args: {
   let done = 0;
 
   for (const h of habits) {
-    const minDateKey =
-      minDateKeyByHabitId?.get(h.id) ?? minDateKeyFromHabit(h) ?? null;
+    const minDateKey = minDateKeyByHabitId?.get(h.id) ?? minDateKeyFromHabit(h) ?? null;
 
     for (const k of keysDesc) {
       if (!isDueOnDateKey({ habit: h, dateKey: k, minDateKey })) continue;
@@ -161,5 +159,5 @@ export function computeOverallWindowStats(args: {
 }
 
 // ==========================
-// End of Version 2 — src/utils/history.ts
+// End of Version 3 — src/utils/history.ts
 // ==========================

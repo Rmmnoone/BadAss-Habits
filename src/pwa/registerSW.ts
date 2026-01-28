@@ -1,8 +1,8 @@
 // ==========================
-// Version 3 — src/pwa/registerSW.ts
-// - Registers the PWA service worker (vite-plugin-pwa)
-// - Safe no-op in unsupported environments
-// - Returns update function (optional future “refresh available” UI)
+// Version 4 — src/pwa/registerSW.ts
+// - Adds local module typing compatibility for "virtual:pwa-register"
+// - Fixes TS7006 (no implicit any) by typing callback params
+// - Behavior unchanged
 // ==========================
 import { registerSW } from "virtual:pwa-register";
 
@@ -12,20 +12,16 @@ export function registerServiceWorker() {
 
   const updateSW = registerSW({
     immediate: true,
-    onRegistered(swUrl, reg) {
-      // eslint-disable-next-line no-console
+    onRegistered(swUrl: string, reg: ServiceWorkerRegistration | undefined) {
       console.log("[PWA] SW registered", { swUrl, reg });
     },
-    onRegisterError(error) {
-      // eslint-disable-next-line no-console
+    onRegisterError(error: unknown) {
       console.log("[PWA] SW register error", error);
     },
     onNeedRefresh() {
-      // eslint-disable-next-line no-console
       console.log("[PWA] New content available; refresh to update.");
     },
     onOfflineReady() {
-      // eslint-disable-next-line no-console
       console.log("[PWA] App ready to work offline.");
     },
   });
@@ -34,5 +30,5 @@ export function registerServiceWorker() {
 }
 
 // ==========================
-// End of Version 3 — src/pwa/registerSW.ts
+// End of Version 4 — src/pwa/registerSW.ts
 // ==========================

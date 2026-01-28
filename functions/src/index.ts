@@ -1,15 +1,15 @@
 // ==========================
-// Version 6 — functions/src/index.ts
-// - Uses fcm.ts v4 options (NO logic changes):
-//   * Digest: urgency=low, ttlSeconds=6h
-//   * Exact:  urgency=high, ttlSeconds=20m + optional "Open" action
-// - Keeps Version 5 behavior:
-//   * Nicer copy + deep links
-//   * Idempotency + safety logs
+// Version 8 — functions/src/index.ts
+// - Fixes "works once then silent" notifications:
+//   * Test push: uses unique notification tag (logId) + renotify: true
+//   * Exact reminders: uses unique tag (logId) + renotify: true
+// - Digest remains unchanged (still uses stable tag logId; renotify false is OK there)
+// - Keeps scheduled reminders + logs behavior unchanged
 // ==========================
 
 import * as admin from "firebase-admin";
 import { onSchedule } from "firebase-functions/v2/scheduler";
+import { onCall, HttpsError } from "firebase-functions/v2/https";
 import { getFirestore } from "firebase-admin/firestore";
 import { hmNow, safeTz, weekdayNow, dateKeyNow } from "./time";
 import { hasExactReminder, isDueToday } from "./due";
@@ -18,6 +18,9 @@ import { sendToTokens } from "./fcm";
 admin.initializeApp();
 const db = getFirestore();
 
+// =====================
+// Scheduled reminders
+// =====================
 export const tickReminders = onSchedule(
   {
     schedule: "every 1 minutes",
@@ -154,14 +157,15 @@ export const tickReminders = onSchedule(
             continue;
           }
 
-          // Nicer notification copy + deep link
           const title = String(h?.name ?? "BadAss Habits");
           const body = "Due now • Tap to check in";
           const link = `/habits/${h.id}`;
 
           const r = await sendToTokens(tokens, title, body, link, {
-            tag: `exact_${h.id}`,
-            renotify: false,
+            // ✅ unique tag prevents silent replacement
+            tag: logId,
+            // ✅ ensure Chrome/Windows shows a toast if it replaces anything
+            renotify: true,
             requireInteraction: true,
             urgency: "high",
             ttlSeconds: 20 * 60, // 20 minutes
@@ -187,6 +191,61 @@ export const tickReminders = onSchedule(
         console.log("[tickReminders][user-error]", uid, err?.message ?? err);
       }
     }
+  }
+);
+
+// =====================
+// Callable: Test push
+// =====================
+export const sendTestPush = onCall(
+  { region: "europe-west2" },
+  async (req) => {
+    const uid = req.auth?.uid;
+    if (!uid) throw new HttpsError("unauthenticated", "Sign in required.");
+
+    const userSnap = await db.collection("users").doc(uid).get();
+    const user = userSnap.data() || {};
+    const userTz = safeTz(user.timezone);
+
+    const nowHM = hmNow(userTz);
+    const dateKey = dateKeyNow(userTz);
+
+    const tokensSnap = await db.collection("users").doc(uid).collection("pushTokens").get();
+    const tokens = tokensSnap.docs.map((d) => (d.data() as any)?.token).filter(Boolean);
+
+    if (!tokens.length) {
+      throw new HttpsError("failed-precondition", "No push tokens found for this user.");
+    }
+
+    const title = "BadAss Habits";
+    const body = `Test notification • ${nowHM}`;
+    const url = "/";
+
+    const logId = `test_${dateKey}_${nowHM.replace(":", "")}`;
+
+    const r = await sendToTokens(tokens, title, body, url, {
+      // ✅ unique tag per send (prevents silent replacement)
+      tag: logId,
+      // ✅ toast even if it updates an existing notification
+      renotify: true,
+      requireInteraction: false,
+      urgency: "high",
+      ttlSeconds: 5 * 60, // 5 min
+      actions: [{ action: "open", title: "Open" }],
+    });
+
+    await cleanupInvalidTokens(uid, r.invalid);
+
+    await markSent(uid, logId, {
+      type: "test",
+      dateKey,
+      atHM: nowHM,
+      tz: userTz,
+      success: r.success,
+      failure: r.failure,
+    });
+
+    return { ok: true, ...r, logId, dateKey, atHM: nowHM, tz: userTz };
   }
 );
 
@@ -221,5 +280,5 @@ async function cleanupInvalidTokens(uid: string, invalidTokens: string[]) {
 }
 
 // ==========================
-// End of Version 6 — functions/src/index.ts
+// End of Version 8 — functions/src/index.ts
 // ==========================

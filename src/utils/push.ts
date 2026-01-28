@@ -1,14 +1,13 @@
 // ==========================
-// Version 3 — src/utils/push.ts
-// - v2 + token lifecycle management
-//   * Saves token only when changed
-//   * Removes old token doc when token rotates
-//   * Stores last token in localStorage per uid
-//   * Adds disablePushForUser(uid) for logout cleanup (no permission prompts)
-//   * Best-effort deletes FCM token via deleteToken()
+// Version 5 — src/utils/push.ts
+// - v4 + fixes TS6133: `changed` was declared but never read
+//   * Removes the unused local and computes changed inline
+// - Keeps token lifecycle logic the same
+// - Keeps callable sendTestPush helper (auth required)
 // ==========================
 import { getMessaging, getToken, deleteToken, isSupported } from "firebase/messaging";
-import { app, db } from "../firebase/client";
+import { httpsCallable } from "firebase/functions";
+import { app, db, functions } from "../firebase/client";
 import { upsertPushToken, removePushToken } from "../firebase/pushTokens";
 
 const VAPID_KEY = import.meta.env.VITE_FIREBASE_VAPID_KEY as string | undefined;
@@ -43,7 +42,6 @@ async function getActiveServiceWorkerRegistration() {
   if (typeof window === "undefined") return null;
   if (!("serviceWorker" in navigator)) return null;
 
-  // Wait for SW to be ready (PWA install / dev)
   const reg = await navigator.serviceWorker.ready.catch(() => null);
   return reg;
 }
@@ -78,7 +76,6 @@ export async function enablePushForUser(uid: string): Promise<EnablePushResult> 
     return { ok: false, reason: "notifications-not-supported" };
   }
 
-  // Permission must come from a user action (button click)
   const perm = await Notification.requestPermission();
   if (perm !== "granted") {
     return { ok: false, reason: "permission-not-granted" };
@@ -88,7 +85,6 @@ export async function enablePushForUser(uid: string): Promise<EnablePushResult> 
     return { ok: false, reason: "missing-vapid-key" };
   }
 
-  // Must have a SW reg for background notifications
   const swReg = await getActiveServiceWorkerRegistration();
   if (!swReg) {
     return { ok: false, reason: "no-service-worker" };
@@ -106,7 +102,6 @@ export async function enablePushForUser(uid: string): Promise<EnablePushResult> 
   }
 
   const prev = readLastToken(uid);
-  const changed = Boolean(prev && prev !== token);
 
   // If token rotated, remove old doc best-effort
   if (prev && prev !== token) {
@@ -121,7 +116,13 @@ export async function enablePushForUser(uid: string): Promise<EnablePushResult> 
   if (!prev || prev !== token) {
     const { created } = await upsertPushToken(db, uid, token);
     writeLastToken(uid, token);
-    return { ok: true, token, changed: true, created };
+
+    return {
+      ok: true,
+      token,
+      changed: Boolean(prev && prev !== token),
+      created,
+    };
   }
 
   // Token same as last time; nothing to write
@@ -141,15 +142,12 @@ export async function disablePushForUser(uid: string): Promise<DisablePushResult
 
   const supported = await isSupported().catch(() => false);
   if (!supported) {
-    // Still clear local token record
     writeLastToken(uid, null);
     return { ok: false, reason: "messaging-not-supported" };
   }
 
-  // Don’t prompt for permission here. If user previously granted, we can clean up.
   const last = readLastToken(uid);
 
-  // Remove Firestore doc for last known token
   if (last) {
     try {
       await removePushToken(db, uid, last);
@@ -158,7 +156,6 @@ export async function disablePushForUser(uid: string): Promise<DisablePushResult
     }
   }
 
-  // Best-effort delete the FCM token in browser (unsubscribe)
   try {
     const swReg = await getActiveServiceWorkerRegistration();
     if (!swReg) {
@@ -167,16 +164,41 @@ export async function disablePushForUser(uid: string): Promise<DisablePushResult
     }
 
     const messaging = getMessaging(app);
-    await deleteToken(messaging); // best-effort; may fail in some environments
+    await deleteToken(messaging);
   } catch {
     // ignore
   }
 
-  // Clear local token record regardless
   writeLastToken(uid, null);
   return { ok: true };
 }
 
+type TestPushResult =
+  | {
+      ok: true;
+      success: number;
+      failure: number;
+      invalid: string[];
+      logId: string;
+      dateKey: string;
+      atHM: string;
+      tz: string;
+    }
+  | { ok: false; reason: string };
+
+export async function sendTestPush(): Promise<TestPushResult> {
+  try {
+    const fn = httpsCallable(functions, "sendTestPush");
+    const res: any = await fn({});
+    const data = res?.data ?? {};
+    if (data?.ok) return data as any;
+    return { ok: false, reason: "Unexpected response from server." };
+  } catch (e: any) {
+    const msg = e?.message ? String(e.message) : "Test push failed.";
+    return { ok: false, reason: msg };
+  }
+}
+
 // ==========================
-// End of Version 3 — src/utils/push.ts
+// End of Version 5 — src/utils/push.ts
 // ==========================

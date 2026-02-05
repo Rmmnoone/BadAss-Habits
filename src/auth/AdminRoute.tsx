@@ -1,14 +1,15 @@
 // ==========================
-// Version 1 — src/auth/ProtectedRoute.tsx
-// - Blocks access to routes unless logged in
-// - Shows a simple loading state while auth initializes
+// Version 1 — src/auth/AdminRoute.tsx
+// - Admin-only route guard (requires custom claim: { admin: true })
+// - Uses AuthProvider's isAdmin flag
 // ==========================
+
 import React from "react";
 import { Navigate } from "react-router-dom";
 import { useAuth } from "./AuthProvider";
 
-export default function ProtectedRoute({ children }: { children: React.ReactNode }) {
-  const { user, loading } = useAuth();
+export default function AdminRoute({ children }: { children: React.ReactNode }) {
+  const { user, loading, isAdmin } = useAuth();
 
   if (loading) {
     return (
@@ -19,9 +20,11 @@ export default function ProtectedRoute({ children }: { children: React.ReactNode
   }
 
   if (!user) return <Navigate to="/login" replace />;
+  if (!isAdmin) return <Navigate to="/" replace />;
 
   return <>{children}</>;
 }
+
 // ==========================
-// End of Version 1 — src/auth/ProtectedRoute.tsx
+// End of Version 1 — src/auth/AdminRoute.tsx
 // ==========================

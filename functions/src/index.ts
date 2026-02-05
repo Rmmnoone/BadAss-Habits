@@ -1,13 +1,7 @@
 // ==========================
-// Version 11 — functions/src/index.ts
-// - v10 + Phase 3.4 TZ override correctness (MVP):
-//   * Treat users/{uid}.timezone as the source of truth for:
-//       - due checks
-//       - digest timing
-//       - exact reminder timing
-//       - quiet hours gating
-//   * Stops using habit.timezone for scheduler clock (prevents mismatch vs Dashboard TZ override)
-// - No schema changes
+// Version 12 — functions/src/index.ts
+// - v11 + Admin panel callables exported from ./admin
+// - No change to reminders scheduler logic
 // ==========================
 
 import * as admin from "firebase-admin";
@@ -17,7 +11,6 @@ import { getFirestore } from "firebase-admin/firestore";
 import { hmNow, safeTz, weekdayNow, dateKeyNow, isWithinQuietHours, isValidHHMM } from "./time";
 import { hasExactReminder, isDueToday } from "./due";
 import { sendToTokens } from "./fcm";
-
 admin.initializeApp();
 const db = getFirestore();
 
@@ -342,6 +335,9 @@ async function cleanupInvalidTokens(uid: string, invalidTokens: string[]) {
   await batch.commit();
 }
 
+export { adminListUsers, adminUserSummary, adminReminderLogs, adminWhoAmI, adminSetAdmin } from "./admin";
+
+
 // ==========================
-// End of Version 11 — functions/src/index.ts
+// End of Version 12 — functions/src/index.ts
 // ==========================

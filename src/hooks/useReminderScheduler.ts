@@ -1,11 +1,11 @@
 // ==========================
-// Version 2 — src/hooks/useReminderScheduler.ts
-// - Zero-cost reminders while app is open
-// - Does NOT auto-request notification permission anymore
-//   * permission request should be triggered by a user gesture (Dashboard button)
-// - Checks every 20s and fires at reminder minute if due + not done
-// - Prevents repeat fires using sessionStorage per day
+// Version 3 — src/hooks/useReminderScheduler.ts
+// - v2 + prevents duplicate notifications:
+//   * Supports disableLocal flag (Dashboard can disable local if FCM is enabled)
+// - Optional timezone support for future (local fallback can respect selected TZ)
+// - Keeps sessionStorage anti-repeat per day/habit
 // ==========================
+
 import { useEffect, useMemo, useState } from "react";
 import type { TodayItem } from "./useToday";
 
@@ -16,13 +16,41 @@ function timeToMinutes(t: string): number {
   return h * 60 + m;
 }
 
-function nowMinutes(): number {
+function nowMinutesLocal(): number {
   const d = new Date();
   return d.getHours() * 60 + d.getMinutes();
 }
 
+// HH:mm in a given IANA TZ (safe; returns null if not supported)
+function hmNowInTz(tz?: string | null): string | null {
+  if (!tz) return null;
+  try {
+    const fmt = new Intl.DateTimeFormat("en-GB", {
+      timeZone: tz,
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    });
+
+    const v = fmt.format(new Date());
+    const m = v.match(/^(\d{2})[:.](\d{2})$/);
+    if (!m) return null;
+    return `${m[1]}:${m[2]}`;
+  } catch {
+    return null;
+  }
+}
+
+function hmToMinutesSafe(hm: string): number {
+  const m = hm.match(/^(\d{2}):(\d{2})$/);
+  if (!m) return Number.POSITIVE_INFINITY;
+  return Number(m[1]) * 60 + Number(m[2]);
+}
+
 function safeNotify(title: string, body: string) {
   try {
+    // Keeping minimal; we intentionally DO NOT add tag/renotify here because
+    // local notifications are now a fallback (FCM handles the real UX).
     new Notification(title, { body });
   } catch {
     // ignore
@@ -33,8 +61,10 @@ export function useReminderScheduler(args: {
   enabled: boolean;
   dateKey: string;
   dueItems: TodayItem[];
+  disableLocal?: boolean;     // NEW: set true to stop local notifications (prevents duplicates)
+  timezone?: string | null;   // OPTIONAL: if provided, local fallback checks time in this TZ
 }) {
-  const { enabled, dateKey, dueItems } = args;
+  const { enabled, dateKey, dueItems, disableLocal = false, timezone = null } = args;
 
   const [permission, setPermission] = useState<NotificationPermission>(() => {
     if (typeof window === "undefined") return "default";
@@ -63,13 +93,16 @@ export function useReminderScheduler(args: {
 
   useEffect(() => {
     if (!enabled) return;
+    if (disableLocal) return; // ✅ prevent duplicates when FCM is active
     if (typeof window === "undefined") return;
     if (!("Notification" in window)) return;
     if (permission !== "granted") return;
     if (candidates.length === 0) return;
 
     const tick = () => {
-      const mNow = nowMinutes();
+      // If timezone provided, compare in that TZ; else use device local time.
+      const hmNow = hmNowInTz(timezone);
+      const mNow = hmNow ? hmToMinutesSafe(hmNow) : nowMinutesLocal();
 
       for (const h of candidates) {
         const mTarget = timeToMinutes(h.reminderTime);
@@ -89,11 +122,11 @@ export function useReminderScheduler(args: {
     tick();
 
     return () => window.clearInterval(id);
-  }, [enabled, permission, candidates, dateKey]);
+  }, [enabled, disableLocal, permission, candidates, dateKey, timezone]);
 
   return { permission };
 }
 
 // ==========================
-// End of Version 2 — src/hooks/useReminderScheduler.ts
+// End of Version 3 — src/hooks/useReminderScheduler.ts
 // ==========================

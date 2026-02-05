@@ -1,33 +1,19 @@
 // ==========================
-// Version 8 — src/pages/History.tsx
-// - v7 + Reminder Logs panel (read-only)
-//   * Reads users/{uid}/reminderLogs (latest first)
-//   * Filter: All / Exact / Digest
-//   * Shows sentAt, type, habit, dateKey, atHM, tz, success/failure
+// Version 10 — src/pages/History.tsx
+// - v9 fixes:
+//   * "View all" modal is now CARD-CONTAINED (not full-screen), so it fits inside Daily breakdown card
+//   * Removes Reminder Logs completely (UI + Firestore listener + types + imports)
 // - Keeps heatmap + analytics logic unchanged
 // ==========================
-import React, { useMemo, useState, useEffect } from "react";
+import React, { useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import Scene from "../components/Scene";
 import { useAuth } from "../auth/AuthProvider";
 import { useHabits } from "../hooks/useHabits";
 import { useHistory } from "../hooks/useHistory";
-import {
-  computeHabitWindowStats,
-  computeOverallWindowStats,
-} from "../utils/history";
+import { computeHabitWindowStats, computeOverallWindowStats } from "../utils/history";
 import { dateKeyFromDate, weekday1to7 } from "../utils/dateKey";
 import { isDueOnDateKey } from "../utils/eligibility";
-
-import { db } from "../firebase/client";
-import {
-  collection,
-  query,
-  orderBy,
-  limit,
-  onSnapshot,
-  type DocumentData,
-} from "firebase/firestore";
 
 function initials(email?: string | null) {
   if (!email) return "U";
@@ -84,9 +70,7 @@ function DarkCard({
         <div className="relative p-5 sm:p-6">
           <div className="flex items-start justify-between gap-3">
             <div>
-              <h2 className="text-base sm:text-lg font-semibold tracking-tight text-white">
-                {title}
-              </h2>
+              <h2 className="text-base sm:text-lg font-semibold tracking-tight text-white">{title}</h2>
               {subtitle ? <p className="mt-1 text-sm text-white/70">{subtitle}</p> : null}
             </div>
             {right ? <div className="shrink-0">{right}</div> : null}
@@ -178,10 +162,7 @@ function buildMonthSlots(monthDate: Date): CalSlot[] {
 }
 
 function HeatLegendNeon() {
-  const dot = (cls: string) => (
-    <span className={`h-2.5 w-2.5 rounded-full border border-white/12 ${cls}`} />
-  );
-
+  const dot = (cls: string) => <span className={`h-2.5 w-2.5 rounded-full border border-white/12 ${cls}`} />;
   return (
     <div className="flex items-center gap-2 text-[11px] text-white/55">
       <span className="mr-1">Less</span>
@@ -195,18 +176,11 @@ function HeatLegendNeon() {
   );
 }
 
-function HeatDot({
-  cell,
-  outOfMonth,
-}: {
-  cell: Cell | null; // null => no data in window
-  outOfMonth?: boolean;
-}) {
+function HeatDot({ cell, outOfMonth }: { cell: Cell | null; outOfMonth?: boolean }) {
   const disabled = cell ? cell.disabled : true;
   const intensity = cell ? cell.intensity : (0 as 0);
 
-  const base =
-    "h-11 w-11 sm:h-12 sm:w-12 rounded-full border flex items-center justify-center select-none transition";
+  const base = "h-9 w-9 sm:h-10 sm:w-10 rounded-full border flex items-center justify-center select-none transition";
 
   const fillByIntensity: Record<0 | 1 | 2 | 3 | 4, string> = {
     0: "bg-white/[0.035]",
@@ -242,9 +216,7 @@ function HeatDot({
   const glow = glowByIntensity[intensity];
   const ring = ringByIntensity[intensity];
 
-  const opacity =
-    (outOfMonth ? "opacity-45" : "opacity-100") +
-    (disabled ? " opacity-45" : "");
+  const opacity = (outOfMonth ? "opacity-45" : "opacity-100") + (disabled ? " opacity-45" : "");
 
   return (
     <div
@@ -257,21 +229,13 @@ function HeatDot({
   );
 }
 
-function MonthCalendar({
-  monthDate,
-  cellsByKey,
-}: {
-  monthDate: Date;
-  cellsByKey: Map<string, Cell>;
-}) {
+function MonthCalendar({ monthDate, cellsByKey }: { monthDate: Date; cellsByKey: Map<string, Cell> }) {
   const slots = useMemo(() => buildMonthSlots(monthDate), [monthDate]);
 
   return (
     <div>
       <div className="mb-4">
-        <div className="text-2xl sm:text-3xl font-semibold tracking-tight text-white/90">
-          {monthLabel(monthDate)}
-        </div>
+        <div className="text-2xl sm:text-3xl font-semibold tracking-tight text-white/90">{monthLabel(monthDate)}</div>
       </div>
 
       <div className="grid grid-cols-7 gap-2 sm:gap-3 mb-2">
@@ -292,9 +256,7 @@ function MonthCalendar({
             <div key={s.key} className="flex items-center justify-center">
               <div className="relative">
                 <HeatDot cell={cell} outOfMonth={outOfMonth} />
-                <div
-                  className={`pointer-events-none absolute inset-0 flex items-center justify-center text-sm font-semibold ${dayText}`}
-                >
+                <div className={`pointer-events-none absolute inset-0 flex items-center justify-center text-sm font-semibold ${dayText}`}>
                   {s.date.getDate()}
                 </div>
               </div>
@@ -306,197 +268,6 @@ function MonthCalendar({
   );
 }
 
-// ===== Reminder Logs (NEW) =====
-type ReminderLogType = "exact" | "digest";
-type ReminderLogRow = {
-  id: string;
-  type?: ReminderLogType;
-  habitId?: string;
-  habitName?: string;
-  dateKey?: string;
-  atHM?: string;
-  tz?: string;
-  success?: number;
-  failure?: number;
-  sentAt?: any; // Firestore Timestamp
-  logId?: string;
-};
-
-function formatSentAt(ts: any): string {
-  try {
-    if (!ts) return "—";
-    const d: Date =
-      typeof ts?.toDate === "function" ? ts.toDate() : ts instanceof Date ? ts : new Date(ts);
-    if (Number.isNaN(d.getTime())) return "—";
-    return d.toLocaleString(undefined, {
-      year: "numeric",
-      month: "short",
-      day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-    });
-  } catch {
-    return "—";
-  }
-}
-
-function badgeType(t?: ReminderLogType) {
-  const base = "inline-flex items-center rounded-full border px-2.5 py-1 text-[11px] font-semibold";
-  if (t === "exact") return <span className={`${base} border-indigo-400/25 bg-indigo-500/10 text-indigo-200`}>Exact</span>;
-  if (t === "digest") return <span className={`${base} border-emerald-400/25 bg-emerald-500/10 text-emerald-200`}>Digest</span>;
-  return <span className={`${base} border-white/12 bg-white/[0.04] text-white/55`}>—</span>;
-}
-
-function ReminderLogsCard({ uid }: { uid: string | null }) {
-  const [filter, setFilter] = useState<"all" | "exact" | "digest">("all");
-  const [rows, setRows] = useState<ReminderLogRow[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!uid) {
-      setRows([]);
-      setErr(null);
-      return;
-    }
-
-    setLoading(true);
-    setErr(null);
-
-    const colRef = collection(db as any, "users", uid, "reminderLogs");
-    const q = query(colRef, orderBy("sentAt", "desc"), limit(60));
-
-    const unsub = onSnapshot(
-      q,
-      (snap) => {
-        const next: ReminderLogRow[] = snap.docs.map((d) => {
-          const data = d.data() as DocumentData;
-          return { id: d.id, ...(data as any) };
-        });
-        setRows(next);
-        setLoading(false);
-      },
-      (e: any) => {
-        setLoading(false);
-        setErr(e?.message ? String(e.message) : "Could not load reminder logs.");
-      }
-    );
-
-    return () => unsub();
-  }, [uid]);
-
-  const visible = useMemo(() => {
-    if (filter === "all") return rows;
-    return rows.filter((r) => r.type === filter);
-  }, [rows, filter]);
-
-  return (
-    <DarkCard
-      title="Reminder logs"
-      subtitle="Read-only — what the scheduler actually sent"
-      right={
-        <div className="flex items-center gap-2">
-          {(["all", "exact", "digest"] as const).map((k) => {
-            const active = filter === k;
-            return (
-              <button
-                key={k}
-                type="button"
-                onClick={() => setFilter(k)}
-                className={`rounded-xl border px-3 py-2 text-xs font-semibold backdrop-blur-2xl transition
-                  ${
-                    active
-                      ? "border-white/30 bg-white/[0.10] text-white ring-2 ring-white/25"
-                      : "border-white/14 bg-white/[0.05] text-white/70 hover:bg-white/[0.10] hover:text-white/85"
-                  }`}
-              >
-                {k === "all" ? "All" : k === "exact" ? "Exact" : "Digest"}
-              </button>
-            );
-          })}
-        </div>
-      }
-    >
-      {loading ? (
-        <div className="text-sm text-white/70">Loading…</div>
-      ) : err ? (
-        <div className="rounded-xl border border-rose-400/20 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
-          {err}
-          <div className="mt-2 text-xs text-white/55">
-            If this is “permission-denied”, your Firestore rules need to allow reading
-            <span className="text-white/75"> users/{`{uid}`}/reminderLogs</span> for the owner.
-          </div>
-        </div>
-      ) : visible.length === 0 ? (
-        <div className="rounded-xl border border-dashed border-white/16 bg-black/10 px-4 py-5">
-          <p className="text-sm text-white/70">No logs yet.</p>
-          <p className="mt-2 text-xs text-white/50">
-            Trigger one: set a habit reminder to the next minute, or wait for the 16:00 digest (only if you have due habits).
-          </p>
-        </div>
-      ) : (
-        <div className="space-y-2">
-          {visible.map((r) => {
-            const title =
-              r.type === "exact"
-                ? String(r.habitName ?? r.habitId ?? "Exact reminder")
-                : "Daily digest";
-            const meta = [
-              r.type === "digest" ? "16:00 digest" : r.atHM ? `at ${r.atHM}` : "—",
-              r.dateKey ? `date ${r.dateKey}` : null,
-              r.tz ? `tz ${r.tz}` : null,
-            ].filter(Boolean);
-
-            return (
-              <div
-                key={r.id}
-                className="rounded-xl border border-white/14 bg-white/[0.07] p-4 backdrop-blur-2xl
-                           shadow-[0_18px_55px_-50px_rgba(0,0,0,0.98)]
-                           flex items-center justify-between gap-3"
-              >
-                <div className="min-w-0">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <div className="text-sm font-semibold text-white truncate">{title}</div>
-                    {badgeType(r.type)}
-                    {r.type === "exact" && r.habitId ? (
-                      <Link
-                        to={`/habits/${r.habitId}`}
-                        className="text-[11px] text-white/55 hover:text-white/75 hover:underline underline-offset-4"
-                        title="Open habit"
-                      >
-                        open
-                      </Link>
-                    ) : null}
-                  </div>
-
-                  <div className="mt-1 text-xs text-white/55">
-                    {meta.join(" • ")}
-                    <span className="text-white/40"> • sent {formatSentAt(r.sentAt)}</span>
-                  </div>
-                </div>
-
-                <div className="flex items-center gap-2 shrink-0">
-                  <div className="rounded-xl border border-white/14 bg-white/[0.06] px-3 py-2 text-xs text-white/80">
-                    ✅ <span className="text-white font-semibold">{r.success ?? 0}</span>
-                  </div>
-                  <div className="rounded-xl border border-white/14 bg-white/[0.06] px-3 py-2 text-xs text-white/80">
-                    ⚠️ <span className="text-white font-semibold">{r.failure ?? 0}</span>
-                  </div>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
-
-      <div className="mt-3 text-[11px] text-white/45">
-        Note: logs are written by Cloud Functions to help debug duplicates, timing, and delivery. They don’t guarantee the device displayed the notification.
-      </div>
-    </DarkCard>
-  );
-}
-// =============================
-
 export default function History() {
   const { user, logout } = useAuth();
   const uid = user?.uid ?? null;
@@ -507,16 +278,15 @@ export default function History() {
   const [heatMode, setHeatMode] = useState<HeatMode>("overall");
   const [selectedHabitId, setSelectedHabitId] = useState<string>("");
 
+  // Daily breakdown modal (card-contained)
+  const [dailyOpen, setDailyOpen] = useState(false);
+
   // Clamp history to "account creation day" so we don't show pre-registration days.
   const minDateKey = useMemo(() => userCreationDateKey(user), [user]);
 
   const { active: activeHabits, loading: habitsLoading } = useHabits(uid);
 
-  const { dateKeysDesc, doneMap, loading: historyLoading } = useHistory(
-    uid,
-    rangeDays,
-    minDateKey
-  );
+  const { dateKeysDesc, doneMap, loading: historyLoading } = useHistory(uid, rangeDays, minDateKey);
 
   // Ensure selectedHabitId always points to a real active habit when in habit mode
   React.useEffect(() => {
@@ -528,8 +298,7 @@ export default function History() {
   }, [heatMode, activeHabits, selectedHabitId]);
 
   const overall = useMemo(() => {
-    if (!activeHabits?.length)
-      return { dueCount: 0, doneCount: 0, completionRate: null as number | null };
+    if (!activeHabits?.length) return { dueCount: 0, doneCount: 0, completionRate: null as number | null };
 
     return computeOverallWindowStats({
       habits: activeHabits as any[],
@@ -609,19 +378,9 @@ export default function History() {
         const rate = due === 0 ? 0 : done / due;
         const intensity = disabled ? 0 : intensityFromRate(rate);
 
-        const label = disabled
-          ? `${k} • No habits due`
-          : `${k} • Done ${done}/${due} (${Math.round(rate * 100)}%)`;
+        const label = disabled ? `${k} • No habits due` : `${k} • Done ${done}/${due} (${Math.round(rate * 100)}%)`;
 
-        return {
-          key: k,
-          weekday,
-          due,
-          done,
-          disabled,
-          intensity: disabled ? 0 : intensity,
-          label,
-        };
+        return { key: k, weekday, due, done, disabled, intensity: disabled ? 0 : intensity, label };
       });
     }
 
@@ -632,15 +391,7 @@ export default function History() {
       const weekday = weekday1to7(d);
 
       if (!habit) {
-        return {
-          key: k,
-          weekday,
-          due: 0,
-          done: 0,
-          disabled: true,
-          intensity: 0,
-          label: `${k} • Loading habit…`,
-        };
+        return { key: k, weekday, due: 0, done: 0, disabled: true, intensity: 0, label: `${k} • Loading habit…` };
       }
 
       const due = isDueOnDateKey({ habit, dateKey: k, minDateKey }) ? 1 : 0;
@@ -650,19 +401,9 @@ export default function History() {
       // Habit mode: only “done” glows
       const intensity = disabled ? 0 : done ? 4 : 0;
 
-      const label = disabled
-        ? `${k} • Not due`
-        : `${k} • ${done ? "Completed" : "Not completed"}`;
+      const label = disabled ? `${k} • Not due` : `${k} • ${done ? "Completed" : "Not completed"}`;
 
-      return {
-        key: k,
-        weekday,
-        due,
-        done,
-        disabled,
-        intensity: disabled ? 0 : intensity,
-        label,
-      };
+      return { key: k, weekday, due, done, disabled, intensity: disabled ? 0 : intensity, label };
     });
   }, [dateKeysDesc, activeHabits, doneMap, heatMode, selectedHabitId, minDateKey]);
 
@@ -679,6 +420,8 @@ export default function History() {
     const d = new Date(topKey + "T12:00:00");
     return startOfMonth(d);
   }, [dateKeysDesc]);
+
+  const dailyPreview = useMemo(() => perDayRows.slice(0, 7), [perDayRows]);
 
   return (
     <Scene className="min-h-screen relative overflow-hidden" contentClassName="relative p-4 sm:p-6">
@@ -760,7 +503,7 @@ export default function History() {
                 className={`rounded-xl border px-4 py-2 text-sm font-semibold backdrop-blur-2xl transition
                   ${
                     active
-                      ? "border-white/30 bg-gradient-to-b from-white/[0.22] to-white/[0.10] text-white ring-2 ring-white/35 shadow-[0_18px_55px_-35px_rgba(255,255,255,0.35)]"
+                      ? "border-white/30 bg-gradient-to-b from-white/[0.22] to-white/[0.10] text-white ring-2 ring-white/25 shadow-[0_18px_55px_-35px_rgba(255,255,255,0.35)]"
                       : "border-white/14 bg-white/[0.05] text-white/70 hover:bg-white/[0.10] hover:text-white/85"
                   }`}
               >
@@ -795,7 +538,7 @@ export default function History() {
                   className={`rounded-xl border px-3 py-2 text-xs font-semibold backdrop-blur-2xl transition
                     ${
                       heatMode === "habit"
-                        ? "border-white/0 bg-white/[0.10] text-white ring-2 ring-white/25"
+                        ? "border-white/30 bg-white/[0.10] text-white ring-2 ring-white/25"
                         : "border-white/14 bg-white/[0.05] text-white/70 hover:bg-white/[0.10] hover:text-white/85"
                     }`}
                 >
@@ -804,7 +547,7 @@ export default function History() {
               </div>
             }
           >
-            <div className="relative overflow-hidden rounded-2xl border border-white/10 bg-black/20">
+            <div className="relative overflow-hidden rounded-2xl border border-white/10 bg-white/[0.06]">
               <div className="pointer-events-none absolute inset-0">
                 <div className="absolute inset-0 bg-[radial-gradient(1200px_circle_at_25%_10%,rgba(236,72,153,0.14),transparent_45%),radial-gradient(1100px_circle_at_80%_35%,rgba(99,102,241,0.12),transparent_45%),radial-gradient(900px_circle_at_50%_110%,rgba(168,85,247,0.10),transparent_50%)]" />
                 <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(255,255,255,0.06),transparent_25%,transparent_70%,rgba(0,0,0,0.45))]" />
@@ -833,8 +576,7 @@ export default function History() {
                   ) : (
                     <div className="space-y-1">
                       <div className="text-sm text-white/70">
-                        Intensity is based on your{" "}
-                        <span className="text-white/85 font-semibold">done/due</span> ratio each day.
+                        Intensity is based on your <span className="text-white/85 font-semibold">done/due</span> ratio each day.
                       </div>
                       <div className="text-xs text-white/45">Each circle = one day.</div>
                     </div>
@@ -852,8 +594,7 @@ export default function History() {
                     <MonthCalendar monthDate={monthDate} cellsByKey={heatCellsByKey} />
 
                     <div className="mt-6 border-t border-white/10 pt-4 text-[11px] text-white/45">
-                      Tip: Use <span className="text-white/70">Habit Details</span> to edit past/future days.
-                      History is a read-only overview.
+                      Tip: Use <span className="text-white/70">Habit Details</span> to edit past/future days. History is a read-only overview.
                     </div>
                   </>
                 )}
@@ -940,40 +681,113 @@ export default function History() {
           </div>
         </div>
 
-        {/* Daily rows */}
+        {/* Daily breakdown (compact + CARD-CONTAINED modal) */}
         <div className="mt-4 sm:mt-5">
-          <DarkCard title="Daily breakdown" subtitle="Due vs done per day (newest first)">
-            {loading ? (
-              <div className="text-sm text-white/70">Loading…</div>
-            ) : (
-              <div className="space-y-2">
-                {perDayRows.map((r) => (
-                  <div
-                    key={r.dateKey}
-                    className="rounded-xl border border-white/14 bg-white/[0.07] p-4 backdrop-blur-2xl
+          <DarkCard
+            title="Daily breakdown"
+            subtitle="Done vs due per day (newest first)"
+            right={
+              <button
+                type="button"
+                onClick={() => setDailyOpen(true)}
+                className="rounded-xl border border-white/14 bg-white/[0.08] px-4 py-2 text-xs font-semibold text-white/90
+                           hover:bg-white/[0.12] transition
+                           shadow-[0_18px_55px_-45px_rgba(0,0,0,0.98)]"
+              >
+                View all
+              </button>
+            }
+          >
+            {/* Important: make this a containing block for the modal */}
+            <div className="relative">
+              {loading ? (
+                <div className="text-sm text-white/70">Loading…</div>
+              ) : perDayRows.length === 0 ? (
+                <div className="text-sm text-white/70">No days to show.</div>
+              ) : (
+                <div className="space-y-2">
+                  {dailyPreview.map((r) => (
+                    <div
+                      key={r.dateKey}
+                      className="rounded-xl border border-white/14 bg-white/[0.07] p-4 backdrop-blur-2xl
                                shadow-[0_18px_55px_-50px_rgba(0,0,0,0.98)]
                                flex items-center justify-between gap-3"
+                    >
+                      <div className="text-sm font-semibold text-white">{r.dateKey}</div>
+                      <div className="text-xs text-white/70">
+                        Done <span className="text-white font-semibold">{r.done}</span> /{" "}
+                        <span className="text-white font-semibold">{r.due}</span>{" "}
+                        {r.due === 0 ? "" : `(${Math.round((r.done / r.due) * 100)}%)`}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <div className="mt-3 text-[11px] text-white/45">
+                Tip: The heatmap is your “scan”. Daily breakdown is for quick spot-checking.
+              </div>
+
+              {/* CARD-CONTAINED MODAL */}
+              {dailyOpen ? (
+                <div className="absolute inset-0 z-20 flex items-start justify-center pt-2">
+                  {/* Backdrop only inside card */}
+                  <div
+                    className="absolute inset-0 rounded-xl bg-black/60"
+                    onClick={() => setDailyOpen(false)}
+                    aria-hidden="true"
+                  />
+
+                  {/* Modal panel (smaller, inside card) */}
+                  <div
+                    className="relative w-[92%] max-w-[520px] rounded-2xl border border-white/14
+                               bg-[#0B1020]/95 backdrop-blur-2xl
+                               shadow-[0_44px_110px_-70px_rgba(0,0,0,0.98)]"
                   >
-                    <div className="text-sm font-semibold text-white">{r.dateKey}</div>
-                    <div className="text-xs text-white/70">
-                      Done <span className="text-white font-semibold">{r.done}</span> /{" "}
-                      <span className="text-white font-semibold">{r.due}</span>{" "}
-                      {r.due === 0 ? "" : `(${Math.round((r.done / r.due) * 100)}%)`}
+                    <div className="p-4 sm:p-5">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="text-base font-semibold tracking-tight text-white">All days</div>
+                          <div className="mt-1 text-[12px] text-white/65">
+                            {rangeDays} day window • newest first
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setDailyOpen(false)}
+                          className="rounded-xl border border-white/14 bg-white/[0.08] px-3 py-2 text-xs font-semibold text-white/90 hover:bg-white/[0.12]"
+                        >
+                          Close
+                        </button>
+                      </div>
+
+                      <div className="mt-3 max-h-[320px] sm:max-h-[380px] overflow-auto pr-1 space-y-2">
+                        {perDayRows.map((r) => (
+                          <div
+                            key={r.dateKey}
+                            className="rounded-xl border border-white/14 bg-white/[0.07] p-3 sm:p-4 backdrop-blur-2xl
+                                       shadow-[0_18px_55px_-50px_rgba(0,0,0,0.98)]
+                                       flex items-center justify-between gap-3"
+                          >
+                            <div className="text-sm font-semibold text-white">{r.dateKey}</div>
+                            <div className="text-xs text-white/70">
+                              Done <span className="text-white font-semibold">{r.done}</span> /{" "}
+                              <span className="text-white font-semibold">{r.due}</span>{" "}
+                              {r.due === 0 ? "" : `(${Math.round((r.done / r.due) * 100)}%)`}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+
+                      <div className="mt-3 text-[11px] text-white/45">
+                        Read-only. This is a compact drill-down inside the card (no page takeover).
+                      </div>
                     </div>
                   </div>
-                ))}
-              </div>
-            )}
-
-            <div className="mt-3 text-[11px] text-white/45">
-              MVP note: Reads 1 Firestore subcollection per day in the window (7/30/90).
+                </div>
+              ) : null}
             </div>
           </DarkCard>
-        </div>
-
-        {/* NEW: Reminder logs */}
-        <div className="mt-4 sm:mt-5">
-          <ReminderLogsCard uid={uid} />
         </div>
 
         <div className="mt-6 text-center text-xs text-white/45">
@@ -985,5 +799,5 @@ export default function History() {
 }
 
 // ==========================
-// End of Version 8 — src/pages/History.tsx
+// End of Version 10 — src/pages/History.tsx
 // ==========================

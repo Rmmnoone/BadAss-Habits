@@ -14,7 +14,7 @@ import { DateTime } from "luxon";
 import { safeTz, weekdayNow, dateKeyNow } from "./time";
 
 function tzOrUtc(input: any): string {
-  return safeTz(input) ?? "UTC";
+  return safeTz(input) || "UTC";
 }
 
 function minDateKeyFromCreatedAt(habit: any, tz: string): string | null {

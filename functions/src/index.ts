@@ -1,22 +1,41 @@
 // ==========================
-// Version 8 — functions/src/index.ts
-// - Fixes "works once then silent" notifications:
-//   * Test push: uses unique notification tag (logId) + renotify: true
-//   * Exact reminders: uses unique tag (logId) + renotify: true
-// - Digest remains unchanged (still uses stable tag logId; renotify false is OK there)
-// - Keeps scheduled reminders + logs behavior unchanged
+// Version 11 — functions/src/index.ts
+// - v10 + Phase 3.4 TZ override correctness (MVP):
+//   * Treat users/{uid}.timezone as the source of truth for:
+//       - due checks
+//       - digest timing
+//       - exact reminder timing
+//       - quiet hours gating
+//   * Stops using habit.timezone for scheduler clock (prevents mismatch vs Dashboard TZ override)
+// - No schema changes
 // ==========================
 
 import * as admin from "firebase-admin";
 import { onSchedule } from "firebase-functions/v2/scheduler";
 import { onCall, HttpsError } from "firebase-functions/v2/https";
 import { getFirestore } from "firebase-admin/firestore";
-import { hmNow, safeTz, weekdayNow, dateKeyNow } from "./time";
+import { hmNow, safeTz, weekdayNow, dateKeyNow, isWithinQuietHours, isValidHHMM } from "./time";
 import { hasExactReminder, isDueToday } from "./due";
 import { sendToTokens } from "./fcm";
 
 admin.initializeApp();
 const db = getFirestore();
+
+type QuietHours = {
+  enabled?: boolean;
+  start?: string; // "HH:mm"
+  end?: string;   // "HH:mm"
+};
+
+function quietConfig(user: any): { enabled: boolean; start: string; end: string } {
+  const q: QuietHours = (user?.quietHours as any) || {};
+  const enabled = q.enabled === true;
+
+  const start = isValidHHMM(q.start) ? String(q.start) : "22:00";
+  const end = isValidHHMM(q.end) ? String(q.end) : "07:00";
+
+  return { enabled, start, end };
+}
 
 // =====================
 // Scheduled reminders
@@ -35,11 +54,24 @@ export const tickReminders = onSchedule(
 
       try {
         const user = userDoc.data() || {};
+
+        // Phase 3.1: global reminders kill switch
+        const remindersEnabled = user.remindersEnabled !== false;
+        if (!remindersEnabled) {
+          console.log("[tick][user][skip:global-off]", { uid });
+          continue;
+        }
+
+        // Phase 3.4: use user timezone as source of truth
         const userTz = safeTz(user.timezone);
 
         const nowHM_userTz = hmNow(userTz);
         const weekday_userTz = weekdayNow(userTz);
         const dateKey_userTz = dateKeyNow(userTz);
+
+        // Phase 3.3: Quiet Hours (in user timezone)
+        const q = quietConfig(user);
+        const quietActive = q.enabled && isWithinQuietHours(nowHM_userTz, q.start, q.end);
 
         const habitsSnap = await db
           .collection("users")
@@ -55,7 +87,8 @@ export const tickReminders = onSchedule(
 
         const habits = habitsSnap.docs.map((d) => ({ id: d.id, ...(d.data() as any) }));
 
-        const dueToday_userTz = habits.filter((h) => isDueToday(h, weekday_userTz));
+        // IMPORTANT: pass tz so "today" is evaluated in userTz
+        const dueToday_userTz = habits.filter((h) => isDueToday(h, weekday_userTz, userTz));
 
         if (dueToday_userTz.length === 0) {
           console.log("[tick][user][skip:no-due]", {
@@ -92,9 +125,25 @@ export const tickReminders = onSchedule(
           due: dueToday_userTz.length,
           tokenCount: tokens.length,
           exactCandidates,
+          quietEnabled: q.enabled,
+          quietStart: q.start,
+          quietEnd: q.end,
+          quietActive,
         });
 
-        // A) Daily digest @ 16:00
+        // If quiet is active, skip ALL sends (digest + exact) this minute.
+        if (quietActive) {
+          console.log("[tick][user][skip:quiet-hours]", {
+            uid,
+            tz: userTz,
+            nowHM: nowHM_userTz,
+            start: q.start,
+            end: q.end,
+          });
+          continue;
+        }
+
+        // A) Daily digest @ 16:00 (userTz)
         if (nowHM_userTz === "16:00") {
           const logId = `digest_${dateKey_userTz}_1600`;
           const alreadySent = await wasSent(uid, logId);
@@ -125,6 +174,7 @@ export const tickReminders = onSchedule(
               tz: userTz,
               success: r.success,
               failure: r.failure,
+              quiet: { enabled: q.enabled, start: q.start, end: q.end, active: false },
             });
 
             console.log("[digest]", { uid, nowHM_userTz, due: dueToday_userTz.length, ...r });
@@ -135,25 +185,24 @@ export const tickReminders = onSchedule(
           console.log("[digest][skip:not-time]", { uid, nowHM_userTz, tz: userTz });
         }
 
-        // B) Exact reminders per habit
+        // B) Exact reminders per habit (NOW ALSO userTz for MVP)
         for (const h of habits) {
           if (!hasExactReminder(h)) continue;
 
-          const habitTz = safeTz(h.timezone ?? userTz);
-          const habitWeekday = weekdayNow(habitTz);
-          const habitDateKey = dateKeyNow(habitTz);
+          // IMPORTANT: evaluate due in userTz
+          const dueInUserTz = isDueToday(h, weekday_userTz, userTz);
+          if (!dueInUserTz) continue;
 
-          if (!isDueToday(h, habitWeekday)) continue;
-
-          const habitNowHM = hmNow(habitTz);
+          // IMPORTANT: compare reminder time using userTz clock
           const reminderHM = String(h?.reminders?.time ?? "");
+          if (!isValidHHMM(reminderHM)) continue;
 
-          if (habitNowHM !== reminderHM) continue;
+          if (nowHM_userTz !== reminderHM) continue;
 
-          const logId = `exact_${h.id}_${habitDateKey}_${reminderHM}`;
+          const logId = `exact_${h.id}_${dateKey_userTz}_${reminderHM}`;
           const alreadySent = await wasSent(uid, logId);
           if (alreadySent) {
-            console.log("[exact][skip]", { uid, habitId: h.id, habitDateKey, reminderHM, tz: habitTz });
+            console.log("[exact][skip]", { uid, habitId: h.id, habitDateKey: dateKey_userTz, reminderHM, tz: userTz });
             continue;
           }
 
@@ -162,9 +211,7 @@ export const tickReminders = onSchedule(
           const link = `/habits/${h.id}`;
 
           const r = await sendToTokens(tokens, title, body, link, {
-            // ✅ unique tag prevents silent replacement
             tag: logId,
-            // ✅ ensure Chrome/Windows shows a toast if it replaces anything
             renotify: true,
             requireInteraction: true,
             urgency: "high",
@@ -178,14 +225,15 @@ export const tickReminders = onSchedule(
             type: "exact",
             habitId: h.id,
             habitName: h.name,
-            dateKey: habitDateKey,
+            dateKey: dateKey_userTz,
             atHM: reminderHM,
-            tz: habitTz,
+            tz: userTz,
             success: r.success,
             failure: r.failure,
+            quiet: { enabled: q.enabled, start: q.start, end: q.end, active: false },
           });
 
-          console.log("[exact]", { uid, habitId: h.id, habitNowHM, tz: habitTz, ...r });
+          console.log("[exact]", { uid, habitId: h.id, nowHM_userTz, tz: userTz, ...r });
         }
       } catch (err: any) {
         console.log("[tickReminders][user-error]", uid, err?.message ?? err);
@@ -205,10 +253,26 @@ export const sendTestPush = onCall(
 
     const userSnap = await db.collection("users").doc(uid).get();
     const user = userSnap.data() || {};
-    const userTz = safeTz(user.timezone);
 
+    // Phase 3.1: global reminders kill switch (strict)
+    const remindersEnabled = user.remindersEnabled !== false;
+    if (!remindersEnabled) {
+      throw new HttpsError("failed-precondition", "Global reminders are OFF for this user.");
+    }
+
+    const userTz = safeTz(user.timezone);
     const nowHM = hmNow(userTz);
     const dateKey = dateKeyNow(userTz);
+
+    // Phase 3.3: quiet hours (strict)
+    const q = quietConfig(user);
+    const quietActive = q.enabled && isWithinQuietHours(nowHM, q.start, q.end);
+    if (quietActive) {
+      throw new HttpsError(
+        "failed-precondition",
+        `Quiet Hours are active (${q.start}–${q.end}). Test push is blocked right now.`
+      );
+    }
 
     const tokensSnap = await db.collection("users").doc(uid).collection("pushTokens").get();
     const tokens = tokensSnap.docs.map((d) => (d.data() as any)?.token).filter(Boolean);
@@ -224,9 +288,7 @@ export const sendTestPush = onCall(
     const logId = `test_${dateKey}_${nowHM.replace(":", "")}`;
 
     const r = await sendToTokens(tokens, title, body, url, {
-      // ✅ unique tag per send (prevents silent replacement)
       tag: logId,
-      // ✅ toast even if it updates an existing notification
       renotify: true,
       requireInteraction: false,
       urgency: "high",
@@ -243,6 +305,7 @@ export const sendTestPush = onCall(
       tz: userTz,
       success: r.success,
       failure: r.failure,
+      quiet: { enabled: q.enabled, start: q.start, end: q.end, active: false },
     });
 
     return { ok: true, ...r, logId, dateKey, atHM: nowHM, tz: userTz };
@@ -280,5 +343,5 @@ async function cleanupInvalidTokens(uid: string, invalidTokens: string[]) {
 }
 
 // ==========================
-// End of Version 8 — functions/src/index.ts
+// End of Version 11 — functions/src/index.ts
 // ==========================

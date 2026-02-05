@@ -8,7 +8,7 @@ import { useEffect, useMemo, useState } from "react";
 import { onSnapshot, type FirestoreError } from "firebase/firestore";
 import { db } from "../firebase/client";
 import { dayHabitsCollection } from "../firebase/checkins";
-import { dateKeyFromDate, todayKey } from "../utils/dateKey";
+import { dateKeyFromDate, todayKey, dateKeyFromDateInTz, todayKeyInTz } from "../utils/dateKey";
 import { isDueOnDateKey } from "../utils/eligibility";
 import { useHabits } from "./useHabits";
 
@@ -39,19 +39,27 @@ function timeToMinutes(t: string): number {
   return h * 60 + m;
 }
 
-function minDateKeyFromHabit(h: any): string | null {
+function minDateKeyFromHabit(h: any, timezone?: string | null): string | null {
   const ts = h?.createdAt;
   const d: Date | null = ts && typeof ts.toDate === "function" ? ts.toDate() : null;
-  return d ? dateKeyFromDate(d) : null;
+  if (!d) return null;
+
+  const tz = typeof timezone === "string" && timezone ? timezone : null;
+  return tz ? dateKeyFromDateInTz(d, tz) : dateKeyFromDate(d);
 }
 
-export function useToday(uid?: string | null) {
+
+export function useToday(uid?: string | null, timezone?: string | null) {
   const { active, loading: habitsLoading } = useHabits(uid);
 
   const [doneSet, setDoneSet] = useState<Set<string>>(new Set());
   const [loadingCheckins, setLoadingCheckins] = useState(true);
 
-  const dateKey = useMemo(() => todayKey(), []);
+  const dateKey = useMemo(() => {
+  const tz = typeof timezone === "string" && timezone ? timezone : null;
+  return tz ? todayKeyInTz(tz) : todayKey();
+}, [timezone]);
+
 
   useEffect(() => {
     if (!uid) {
@@ -81,7 +89,7 @@ export function useToday(uid?: string | null) {
 
   const items: TodayItem[] = useMemo(() => {
     return (active as any[]).map((h) => {
-      const minDateKey = minDateKeyFromHabit(h);
+      const minDateKey = minDateKeyFromHabit(h, timezone);
 
       const due = isDueOnDateKey({
         habit: h,

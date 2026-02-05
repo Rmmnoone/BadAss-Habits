@@ -1,17 +1,23 @@
 // ==========================
-// Version 5 — src/pages/HabitDetails.tsx
-// - v4 + correctness refactor:
-//   * Uses shared eligibility logic from utils/eligibility
-//   * Removes local schedule/due logic duplication
-// - UI and behavior unchanged
+// Version 6 — src/pages/HabitDetails.tsx
+// - v5 + Schedule & Reminder management inside HabitDetails (command center)
+//   * Reuses ScheduleModal UI (embedded in this file)
+//   * Reads schedule via useHabitSchedule(uid, habitId) (canonical subdoc)
+//   * Saves via setHabitSchedule(db, uid, habitId, ...)
+//   * Shows current schedule/reminder summary + Edit button
+// - Keeps shared eligibility logic from utils/eligibility (no duplication)
+// - UI style matches existing glass/dark cards
 // ==========================
+
 import React, { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import Scene from "../components/Scene";
 import { useAuth } from "../auth/AuthProvider";
 import { useHabits } from "../hooks/useHabits";
+import { useHabitSchedule } from "../hooks/useHabitSchedule";
 import { db } from "../firebase/client";
 import { clearCheckin, getDoneMapForRange, setCheckin } from "../firebase/checkins";
+import { setHabitSchedule, type HabitScheduleType, type HabitReminder } from "../firebase/schedules";
 import { dateKeyFromDate, lastNDaysKeys, weekday1to7 } from "../utils/dateKey";
 import { getDayEligibility } from "../utils/eligibility";
 
@@ -119,6 +125,301 @@ function getCurrentMonthDays() {
   return { label: monthName(first), leadingBlanks, days };
 }
 
+// ===== Schedule helpers (local) =====
+function weekdayLabel(n: number) {
+  const map = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+  return map[n - 1] ?? "?";
+}
+
+function scheduleSummary(type: HabitScheduleType, days?: number[]) {
+  if (type === "daily") return "Daily";
+  const d = (days ?? []).slice().sort((a, b) => a - b).map(weekdayLabel);
+  return d.length ? `Weekly: ${d.join(", ")}` : "Weekly: (pick days)";
+}
+
+function isValidHHMM(s: any): boolean {
+  if (typeof s !== "string") return false;
+  return /^([01]\d|2[0-3]):([0-5]\d)$/.test(s);
+}
+
+function safeHHMM(s: any, fallback = "09:00"): string {
+  const v = typeof s === "string" ? s : "";
+  return isValidHHMM(v) ? v : fallback;
+}
+
+function reminderPill(reminders?: any) {
+  const enabled = Boolean(reminders?.enabled);
+  const time = typeof reminders?.time === "string" ? reminders.time : "";
+
+  if (!enabled) {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full border border-white/12 bg-white/[0.04] px-2.5 py-1 text-[11px] text-white/55">
+        <span aria-hidden>⏰</span> Off
+      </span>
+    );
+  }
+
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full border border-white/18 bg-white/[0.07] px-2.5 py-1 text-[11px] text-white/80">
+      <span aria-hidden>⏰</span> {time || "On"}
+    </span>
+  );
+}
+
+// ===== ScheduleModal (reused UI, embedded) =====
+function ScheduleModal({
+  open,
+  onClose,
+  habitName,
+  initialType,
+  initialDays,
+  initialReminderEnabled,
+  initialReminderTime,
+  onSave,
+  saving,
+}: {
+  open: boolean;
+  onClose: () => void;
+  habitName: string;
+  initialType: HabitScheduleType;
+  initialDays: number[];
+  initialReminderEnabled: boolean;
+  initialReminderTime: string; // "HH:mm"
+  onSave: (next: {
+    type: HabitScheduleType;
+    daysOfWeek: number[];
+    reminder: HabitReminder;
+  }) => Promise<void>;
+  saving: boolean;
+}) {
+  const [type, setType] = useState<HabitScheduleType>(initialType);
+  const [days, setDays] = useState<number[]>(initialDays);
+
+  const [remEnabled, setRemEnabled] = useState<boolean>(initialReminderEnabled);
+
+  // time input can emit partial values in some browsers; keep lastValidTime to recover on blur
+  const [remTime, setRemTime] = useState<string>(safeHHMM(initialReminderTime, "09:00"));
+  const [lastValidTime, setLastValidTime] = useState<string>(safeHHMM(initialReminderTime, "09:00"));
+
+  React.useEffect(() => {
+    if (!open) return;
+
+    setType(initialType);
+    setDays(initialDays);
+
+    const seed = safeHHMM(initialReminderTime, "09:00");
+    setRemEnabled(Boolean(initialReminderEnabled));
+    setRemTime(seed);
+    setLastValidTime(seed);
+  }, [open, habitName, initialType, initialDays, initialReminderEnabled, initialReminderTime]);
+
+  const reminderInvalid = useMemo(() => {
+    if (!remEnabled) return false;
+    return !isValidHHMM(remTime);
+  }, [remEnabled, remTime]);
+
+  const canSave = useMemo(() => {
+    if (saving) return false;
+    if (type === "weekly" && days.length === 0) return false;
+    if (remEnabled && reminderInvalid) return false;
+    return true;
+  }, [type, days, saving, remEnabled, reminderInvalid]);
+
+  function toggleDay(n: number) {
+    setDays((prev) => (prev.includes(n) ? prev.filter((x) => x !== n) : [...prev, n]));
+  }
+
+  if (!open) return null;
+
+  function freqButtonClass(active: boolean) {
+    return `rounded-xl border px-4 py-2 text-sm font-semibold backdrop-blur-2xl transition
+      ${
+        active
+          ? "border-white/30 bg-gradient-to-b from-white/[0.22] to-white/[0.10] text-white ring-2 ring-white/35 shadow-[0_18px_55px_-35px_rgba(255,255,255,0.35)] scale-[1.02]"
+          : "border-white/14 bg-white/[0.05] text-white/70 hover:bg-white/[0.10] hover:text-white/85"
+      }`;
+  }
+
+  function dayChipClass(active: boolean, disabled: boolean) {
+    if (disabled) {
+      return `rounded-full border px-3 py-1.5 text-xs font-semibold transition
+        border-white/10 bg-white/[0.03] text-white/35 cursor-not-allowed`;
+    }
+
+    return `rounded-full border px-3 py-1.5 text-xs font-semibold transition
+      ${
+        active
+          ? "border-white/30 bg-gradient-to-b from-white/[0.22] to-white/[0.10] text-white ring-2 ring-white/30 shadow-[0_18px_55px_-40px_rgba(255,255,255,0.28)]"
+          : "border-white/12 bg-white/[0.04] text-white/65 hover:bg-white/[0.10] hover:text-white/85"
+      }`;
+  }
+
+  const daysDisabled = type === "daily";
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <button aria-label="Close" onClick={onClose} className="absolute inset-0 bg-black/60" />
+
+      <div className="relative w-full max-w-lg rounded-2xl border border-white/14 bg-white/[0.08] backdrop-blur-2xl shadow-[0_44px_110px_-70px_rgba(0,0,0,0.98)] overflow-hidden">
+        <div className="pointer-events-none absolute inset-0">
+          <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(255,255,255,0.12),transparent_40%,rgba(0,0,0,0.25))]" />
+        </div>
+
+        <div className="relative p-5 sm:p-6">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <div className="text-sm font-semibold text-white">Schedule</div>
+              <div className="mt-1 text-xs text-white/60">
+                {habitName} • {scheduleSummary(type, days)} • ⏰ {remEnabled ? remTime : "Off"}
+              </div>
+            </div>
+            <button
+              onClick={onClose}
+              className="rounded-lg border border-white/14 bg-white/[0.06] px-3 py-2 text-xs font-semibold text-white/80 hover:bg-white/[0.10]"
+            >
+              Close
+            </button>
+          </div>
+
+          <div className="mt-5 space-y-4">
+            {/* Frequency */}
+            <div className="rounded-xl border border-white/14 bg-white/[0.05] p-4">
+              <div className="text-xs font-semibold text-white/75 mb-3">Frequency</div>
+              <div className="flex gap-2">
+                <button type="button" onClick={() => setType("daily")} className={freqButtonClass(type === "daily")}>
+                  {type === "daily" ? "✓ Daily" : "Daily"}
+                </button>
+
+                <button type="button" onClick={() => setType("weekly")} className={freqButtonClass(type === "weekly")}>
+                  {type === "weekly" ? "✓ Weekly" : "Weekly"}
+                </button>
+              </div>
+
+              <div className="mt-2 text-xs text-white/45">Daily = every day. Weekly = choose days.</div>
+            </div>
+
+            {/* Days */}
+            <div className={`rounded-xl border border-white/14 bg-white/[0.05] p-4 ${daysDisabled ? "opacity-75" : ""}`}>
+              <div className="text-xs font-semibold text-white/75 mb-3">Days of week</div>
+
+              <div className="flex flex-wrap gap-2">
+                {[1, 2, 3, 4, 5, 6, 7].map((n) => {
+                  const activeDay = days.includes(n);
+                  const label = weekdayLabel(n);
+
+                  return (
+                    <button
+                      key={n}
+                      type="button"
+                      disabled={daysDisabled}
+                      onClick={() => toggleDay(n)}
+                      className={dayChipClass(activeDay, daysDisabled)}
+                      title={daysDisabled ? "Switch to Weekly to select days" : undefined}
+                    >
+                      {activeDay && !daysDisabled ? "✓ " : ""}
+                      {label}
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div className="mt-2 text-xs text-white/45">
+                {type === "weekly" ? "Pick at least one day." : "Switch to Weekly to enable day selection."}
+              </div>
+            </div>
+
+            {/* Reminder */}
+            <div className="rounded-xl border border-white/14 bg-white/[0.05] p-4">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <div className="text-xs font-semibold text-white/75">Reminder</div>
+                  <div className="mt-1 text-xs text-white/45">
+                    If Push is enabled, we send <span className="text-white/70">Exact reminders</span> at this time (when due).
+                    <span className="text-white/60"> • </span>
+                    Daily digest runs at <span className="text-white/70">16:00</span> if you have ≥1 due habit.
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setRemEnabled((x) => !x);
+                    // if toggling ON while current value is invalid, restore last valid immediately
+                    setRemTime((cur) => (isValidHHMM(cur) ? cur : lastValidTime || "09:00"));
+                  }}
+                  className={`rounded-xl border px-4 py-2 text-sm font-semibold backdrop-blur-2xl transition
+                    ${
+                      remEnabled
+                        ? "border-white/30 bg-gradient-to-b from-white/[0.22] to-white/[0.10] text-white ring-2 ring-white/30"
+                        : "border-white/14 bg-white/[0.05] text-white/70 hover:bg-white/[0.10] hover:text-white/85"
+                    }`}
+                >
+                  {remEnabled ? "✓ On" : "Off"}
+                </button>
+              </div>
+
+              <div className={`mt-3 ${remEnabled ? "" : "opacity-50"}`}>
+                <label className="block text-xs font-medium text-white/70 mb-2">Time</label>
+                <input
+                  type="time"
+                  disabled={!remEnabled}
+                  value={remTime}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    setRemTime(v);
+                    if (isValidHHMM(v)) setLastValidTime(v);
+                  }}
+                  onBlur={() => {
+                    // Snap back to last valid if user leaves the field with an invalid partial value
+                    if (!remEnabled) return;
+                    if (!isValidHHMM(remTime)) setRemTime(lastValidTime || "09:00");
+                  }}
+                  className="w-full rounded-xl border border-white/14 bg-white/[0.08] px-4 py-3 text-sm text-white outline-none
+                             placeholder:text-white/35
+                             focus:border-white/22 focus:ring-4 focus:ring-white/10
+                             disabled:cursor-not-allowed"
+                />
+                <div className="mt-2 text-xs text-white/45">
+                  Stored as <span className="text-white/70">HH:mm</span> in your local time.
+                </div>
+
+                {remEnabled && reminderInvalid ? (
+                  <div className="mt-2 rounded-xl border border-rose-400/20 bg-rose-500/10 px-4 py-3 text-xs text-rose-200">
+                    Invalid time. Please choose a valid <span className="font-semibold">HH:mm</span> (e.g. 09:00).
+                  </div>
+                ) : null}
+              </div>
+            </div>
+
+            {/* Save */}
+            <button
+              type="button"
+              disabled={!canSave}
+              onClick={() => {
+                const safeTime = safeHHMM(remTime, lastValidTime || "09:00");
+                onSave({
+                  type,
+                  daysOfWeek: days,
+                  reminder: { enabled: remEnabled, time: safeTime },
+                });
+              }}
+              className="w-full rounded-xl border border-white/14 bg-white/[0.10] px-4 py-3 text-sm font-semibold text-white
+                         hover:bg-white/[0.14] disabled:opacity-50 disabled:hover:bg-white/[0.10]
+                         shadow-[0_28px_80px_-60px_rgba(0,0,0,0.98)]"
+            >
+              {saving ? "Saving…" : "Save schedule"}
+            </button>
+
+            <div className="text-xs text-white/45 text-center">
+              Tip: Weekly schedules affect which days count as <span className="text-white/70">due</span>.
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function HabitDetails() {
   const { user, logout } = useAuth();
   const nav = useNavigate();
@@ -172,6 +473,41 @@ export default function HabitDetails() {
   const [loading, setLoading] = useState(true);
   const [doneMap, setDoneMap] = useState<Map<string, Set<string>>>(new Map());
   const [togglingKey, setTogglingKey] = useState<string | null>(null);
+
+  // Schedule modal state
+  const [schedOpen, setSchedOpen] = useState(false);
+  const [savingSchedule, setSavingSchedule] = useState(false);
+
+  // canonical schedule read (subdoc)
+  const { schedule, loading: scheduleLoading } = useHabitSchedule(uid, habitId || null);
+
+  // Best-effort schedule values:
+  // prefer canonical subdoc; fallback to denormalized habit doc (for safety)
+  const effectiveType: HabitScheduleType = useMemo(() => {
+    const t = (schedule as any)?.type ?? (habit as any)?.schedule?.type ?? "daily";
+    return t === "weekly" ? "weekly" : "daily";
+  }, [schedule, habit]);
+
+  const effectiveDays: number[] = useMemo(() => {
+    const days = (schedule as any)?.daysOfWeek ?? (habit as any)?.schedule?.daysOfWeek ?? [];
+    return Array.isArray(days) ? days : [];
+  }, [schedule, habit]);
+
+  const effectiveReminderEnabled: boolean = useMemo(() => {
+    const v =
+      (schedule as any)?.reminder?.enabled ??
+      (habit as any)?.reminders?.enabled ??
+      false;
+    return Boolean(v);
+  }, [schedule, habit]);
+
+  const effectiveReminderTime: string = useMemo(() => {
+    const v =
+      (schedule as any)?.reminder?.time ??
+      (habit as any)?.reminders?.time ??
+      "09:00";
+    return safeHHMM(v, "09:00");
+  }, [schedule, habit]);
 
   useEffect(() => {
     let cancelled = false;
@@ -257,6 +593,18 @@ export default function HabitDetails() {
     }
   }
 
+  async function saveSchedule(next: { type: HabitScheduleType; daysOfWeek: number[]; reminder: HabitReminder }) {
+    if (!uid || !habitId) return;
+
+    setSavingSchedule(true);
+    try {
+      await setHabitSchedule(db, uid, habitId, next);
+      setSchedOpen(false);
+    } finally {
+      setSavingSchedule(false);
+    }
+  }
+
   const headerTitle = habit ? habit.name : "Habit";
   const headerSubtitle = habit
     ? "Use the month view to tick days (future allowed). The list below is descending."
@@ -339,6 +687,58 @@ export default function HabitDetails() {
               Logout
             </button>
           </div>
+        </div>
+
+        {/* NEW: Schedule & Reminder */}
+        <div className="mb-4">
+          <DarkCard
+            title="Schedule & reminder"
+            subtitle="Controls which days count as due, and when (optional) reminders fire."
+            right={
+              <button
+                type="button"
+                onClick={() => setSchedOpen(true)}
+                className="rounded-xl border border-white/14 bg-white/[0.08] px-4 py-2 text-xs font-semibold text-white/85 hover:bg-white/[0.12] transition"
+                disabled={habitsLoading || !habitId}
+              >
+                Edit
+              </button>
+            }
+          >
+            {habitsLoading || !habitId ? (
+              <div className="text-sm text-white/70">Loading…</div>
+            ) : !habit ? (
+              <div className="text-sm text-white/70">
+                Habit not found.{" "}
+                <Link to="/habits" className="underline underline-offset-4 text-white/80">
+                  Go back
+                </Link>
+                .
+              </div>
+            ) : (
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="inline-flex items-center rounded-full border border-white/12 bg-white/[0.04] px-2.5 py-1 text-[11px] text-white/70">
+                  {scheduleLoading ? "Schedule: loading…" : `Schedule: ${scheduleSummary(effectiveType, effectiveDays)}`}
+                </span>
+
+                {effectiveType === "weekly" ? (
+                  <span className="inline-flex items-center rounded-full border border-white/12 bg-white/[0.04] px-2.5 py-1 text-[11px] text-white/55">
+                    Due only on selected weekdays
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center rounded-full border border-white/12 bg-white/[0.04] px-2.5 py-1 text-[11px] text-white/55">
+                    Due every day
+                  </span>
+                )}
+
+                {reminderPill({ enabled: effectiveReminderEnabled, time: effectiveReminderTime })}
+
+                <div className="w-full mt-2 text-[11px] text-white/45">
+                  Note: Changing schedule affects <span className="text-white/70">History</span> rates/streaks because only “due” days count.
+                </div>
+              </div>
+            )}
+          </DarkCard>
         </div>
 
         {/* Month view */}
@@ -571,10 +971,23 @@ export default function HabitDetails() {
           </div>
         </DarkCard>
       </div>
+
+      {/* Schedule modal */}
+      <ScheduleModal
+        open={schedOpen}
+        onClose={() => setSchedOpen(false)}
+        habitName={headerTitle || "Habit"}
+        initialType={effectiveType}
+        initialDays={effectiveDays}
+        initialReminderEnabled={effectiveReminderEnabled}
+        initialReminderTime={effectiveReminderTime}
+        onSave={saveSchedule}
+        saving={savingSchedule}
+      />
     </Scene>
   );
 }
 
 // ==========================
-// End of Version 5 — src/pages/HabitDetails.tsx
+// End of Version 6 — src/pages/HabitDetails.tsx
 // ==========================

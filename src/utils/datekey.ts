@@ -42,6 +42,31 @@ export function lastNDaysKeys(n: number): string[] {
   return out;
 }
 
+// ---------- Timezone-aware helpers (MVP) ----------
+
+/** YYYY-MM-DD for "now" in a given IANA timezone (e.g. Europe/London) */
+export function todayKeyInTz(tz: string): string {
+  return dateKeyFromDateInTz(new Date(), tz);
+}
+
+/** YYYY-MM-DD for a provided Date in a given IANA timezone */
+export function dateKeyFromDateInTz(d: Date, tz: string): string {
+  // Use formatToParts so we don't depend on locale formatting.
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: tz,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(d);
+
+  const y = parts.find((p) => p.type === "year")?.value ?? "1970";
+  const m = parts.find((p) => p.type === "month")?.value ?? "01";
+  const day = parts.find((p) => p.type === "day")?.value ?? "01";
+
+  return `${y}-${m}-${day}`;
+}
+
+
 // ==========================
 // End of Version 2 — src/utils/dateKey.ts
 // ==========================

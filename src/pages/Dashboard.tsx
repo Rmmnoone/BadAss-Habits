@@ -1,9 +1,5 @@
 // ==========================
-// Version 18 — src/pages/Dashboard.tsx
-// - v17 + Test push button (calls Cloud Function sendTestPush):
-//   * Adds "Send test push" action (only when permission is granted)
-//   * Shows success/failure status message with logId
-//   * No logic changes to reminders scheduling / insights
+// Version 25 — src/pages/Dashboard.tsx
 // ==========================
 import React, { useEffect, useMemo, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
@@ -16,7 +12,27 @@ import { useHabits } from "../hooks/useHabits";
 import { lastNDaysKeys } from "../utils/dateKey";
 import { isDueOnDateKey } from "../utils/eligibility";
 import { useReminderScheduler } from "../hooks/useReminderScheduler";
-import { enablePushForUser, sendTestPush } from "../utils/push";
+import { enablePushForUser } from "../utils/push";
+import { ensureUserDoc, setUserRemindersEnabled, setUserQuietHours, setUserTimezone } from "../firebase/users";
+import {
+  collection,
+  getCountFromServer,
+  getDoc,
+  doc,
+  query,
+  orderBy,
+  limit,
+  getDocs,
+} from "firebase/firestore";
+
+//
+const tileClass =
+  "rounded-xl border border-white/14 bg-white/[0.07] p-4 backdrop-blur-2xl shadow-[0_20px_60px_-50px_rgba(0,0,0,0.98)]";
+
+const toneTileClass =
+  "rounded-xl border p-4 backdrop-blur-2xl shadow-[0_20px_60px_-50px_rgba(0,0,0,0.98)]";
+
+//
 
 function initials(email?: string | null) {
   if (!email) return "U";
@@ -60,7 +76,7 @@ function DarkCard({
 
         <div className="relative p-5 sm:p-6">
           <div className="flex items-start justify-between gap-3">
-            <div>
+            <div className="min-w-0">
               <h2 className="text-base sm:text-lg font-semibold tracking-tight text-white">{title}</h2>
               {subtitle ? <p className="mt-1 text-sm text-white/70">{subtitle}</p> : null}
             </div>
@@ -76,7 +92,7 @@ function DarkCard({
 
 function ReminderPill({ time, off }: { time?: string; off?: boolean }) {
   return (
-    <span className="inline-flex items-center gap-1 rounded-full border border-white/14 bg-white/[0.06] px-2.5 py-1 text-[11px] font-semibold text-white/75">
+    <span className="inline-flex items-center gap-1 rounded-full border border-white/14 bg-white/[0.07] px-2.5 py-1 text-[11px] font-semibold text-white/75">
       <span className="opacity-80">⏰</span> {off ? "Off" : time}
     </span>
   );
@@ -85,7 +101,7 @@ function ReminderPill({ time, off }: { time?: string; off?: boolean }) {
 function StreakPill({ n }: { n: number }) {
   return (
     <span
-      className="inline-flex items-center gap-1 rounded-full border border-white/14 bg-white/[0.06] px-2.5 py-1 text-[11px] font-semibold text-white/75"
+      className="inline-flex items-center gap-1 rounded-full border border-white/14 bg-white/[0.07] px-2.5 py-1 text-[11px] font-semibold text-white/75"
       title="Current streak (due days only)"
     >
       <span className="opacity-80">🔥</span> {n}
@@ -118,17 +134,205 @@ function hmToMinutes(hm: string): number {
   return h * 60 + m;
 }
 
+// Supports wrap-around windows (e.g. 22:00 → 07:00)
+function isWithinQuietHours(nowHM: string, startHM: string, endHM: string): boolean {
+  if (!isValidHHMM(nowHM) || !isValidHHMM(startHM) || !isValidHHMM(endHM)) return false;
+
+  const now = hmToMinutes(nowHM);
+  const start = hmToMinutes(startHM);
+  const end = hmToMinutes(endHM);
+
+  if (start === end) return false;
+
+  if (start < end) return now >= start && now < end;
+  return now >= start || now < end;
+}
+
+// Validate IANA TZ with Intl
+function isValidIanaTz(tz: string): boolean {
+  if (!tz || typeof tz !== "string") return false;
+  try {
+    new Intl.DateTimeFormat("en-GB", { timeZone: tz }).format(new Date());
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// HH:mm in a given IANA TZ (safe; returns null if not supported)
+function hmNowInTz(tz?: string | null): string | null {
+  if (!tz) return null;
+  try {
+    const fmt = new Intl.DateTimeFormat("en-GB", {
+      timeZone: tz,
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    });
+
+    const v = fmt.format(new Date());
+    const m = v.match(/^(\d{2})[:.](\d{2})$/);
+    if (!m) return null;
+    return `${m[1]}:${m[2]}`;
+  } catch {
+    return null;
+  }
+}
+
 type PushUiState =
   | { status: "idle"; msg?: string }
   | { status: "working"; msg: string }
   | { status: "enabled"; msg: string }
   | { status: "error"; msg: string };
 
-type TestUiState =
+type GlobalUiState =
   | { status: "idle"; msg?: string }
   | { status: "working"; msg: string }
-  | { status: "success"; msg: string }
+  | { status: "saved"; msg: string }
   | { status: "error"; msg: string };
+
+type LastLogState =
+  | { status: "idle" }
+  | { status: "working" }
+  | { status: "ok"; text: string }
+  | { status: "error"; text: string };
+
+type QuietUiState =
+  | { status: "idle"; msg?: string }
+  | { status: "working"; msg: string }
+  | { status: "saved"; msg: string }
+  | { status: "error"; msg: string };
+
+type TzUiState =
+  | { status: "idle"; msg?: string }
+  | { status: "working"; msg: string }
+  | { status: "saved"; msg: string }
+  | { status: "error"; msg: string };
+
+type EffectivePushKind =
+  | "READY"
+  | "OFF"
+  | "QUIET_ACTIVE"
+  | "NEEDS_PERMISSION"
+  | "BLOCKED"
+  | "NO_TOKEN"
+  | "NO_SW"
+  | "INSECURE"
+  | "UNSUPPORTED";
+
+function buildPushStatus(args: {
+  globalEnabled: boolean;
+  quietEnabled: boolean;
+  quietActive: boolean;
+  quietStart: string;
+  quietEnd: string;
+  notifSupported: boolean;
+  secureContext: boolean;
+  notifStatus: NotificationPermission | "unsupported";
+  tokenCount: number | null;
+  swControlled: boolean;
+}): {
+  kind: EffectivePushKind;
+  headline: string;
+  action: string;
+  tone: "good" | "warn" | "bad";
+} {
+  const {
+    globalEnabled,
+    quietEnabled,
+    quietActive,
+    quietStart,
+    quietEnd,
+    notifSupported,
+    secureContext,
+    notifStatus,
+    tokenCount,
+    swControlled,
+  } = args;
+
+  if (!globalEnabled) {
+    return { kind: "OFF", headline: "❌ Reminders are OFF", action: "Turn Global reminders ON.", tone: "bad" };
+  }
+
+  if (quietEnabled && quietActive) {
+    return {
+      kind: "QUIET_ACTIVE",
+      headline: "⏳ Quiet hours are active",
+      action: `Reminders are paused until ${quietEnd} (window ${quietStart}–${quietEnd}).`,
+      tone: "warn",
+    };
+  }
+
+  if (!notifSupported || notifStatus === "unsupported") {
+    return {
+      kind: "UNSUPPORTED",
+      headline: "❌ Push not supported here",
+      action: "Try Chrome on desktop or Android (or install the PWA).",
+      tone: "bad",
+    };
+  }
+
+  if (!secureContext) {
+    return {
+      kind: "INSECURE",
+      headline: "❌ Push requires HTTPS",
+      action: "Open the app on HTTPS (or localhost).",
+      tone: "bad",
+    };
+  }
+
+  if (notifStatus === "denied") {
+    return {
+      kind: "BLOCKED",
+      headline: "❌ Notifications are BLOCKED",
+      action: "Chrome: 🔒 → Site settings → Notifications → Allow.",
+      tone: "bad",
+    };
+  }
+
+  if (notifStatus === "default") {
+    return {
+      kind: "NEEDS_PERMISSION",
+      headline: "⚠️ Notifications are OFF on this device",
+      action: "Click “Enable notifications”.",
+      tone: "warn",
+    };
+  }
+
+  if (tokenCount === null) {
+    return {
+      kind: "NO_TOKEN",
+      headline: "⚠️ Checking device registration…",
+      action: "If this doesn’t resolve, click “Enable notifications” again.",
+      tone: "warn",
+    };
+  }
+
+  if (tokenCount <= 0) {
+    return {
+      kind: "NO_TOKEN",
+      headline: "⚠️ Device not registered (no token)",
+      action: "Click “Enable notifications” to register this device.",
+      tone: "warn",
+    };
+  }
+
+  if (!swControlled) {
+    return {
+      kind: "NO_SW",
+      headline: "⚠️ Service worker not controlling the page",
+      action: "Reload once. If installed as PWA, close and reopen it.",
+      tone: "warn",
+    };
+  }
+
+  return {
+    kind: "READY",
+    headline: "✅ Reminders are ON and working",
+    action: "You’ll receive exact reminders even when the app is closed.",
+    tone: "good",
+  };
+}
 
 export default function Dashboard() {
   const { user, logout } = useAuth();
@@ -137,44 +341,101 @@ export default function Dashboard() {
   const loc = useLocation();
   const debugOn = useMemo(() => new URLSearchParams(loc.search).get("debug") === "1", [loc.search]);
 
-  // Today list (already filters due today)
-  const { dateKey, dueItems, items, loading } = useToday(uid);
-
-  // We also need the full active habit docs (to read schedule for past-day due logic)
+    const [userTz, setUserTz] = useState<string>("Europe/London");
+  const { dateKey, dueItems, items, loading } = useToday(uid, userTz);
   const { active: activeHabits, loading: habitsLoading } = useHabits(uid);
 
   const [busyId, setBusyId] = useState<string | null>(null);
 
-  // ===== MVP insights state =====
   const [insightsLoading, setInsightsLoading] = useState(false);
   const [bestCurrentStreak, setBestCurrentStreak] = useState<number | null>(null);
   const [consistency7d, setConsistency7d] = useState<string>("—");
-  // Per-habit current streak map (for Today pills)
   const [streakByHabitId, setStreakByHabitId] = useState<Record<string, number>>({});
-  // =============================
 
   const notifSupported = typeof window !== "undefined" && "Notification" in window;
   const secureContext = typeof window !== "undefined" ? window.isSecureContext : false;
 
-  // (kept) Hook-based permission snapshot (does not drive push; only UI state)
+  const [tokenSnap, setTokenSnap] = useState<{ count: number | null; status: "idle" | "working" | "ok" | "error" }>(
+    { count: null, status: "idle" }
+  );
+
+
   const { permission } = useReminderScheduler({
     enabled: Boolean(uid),
     dateKey,
     dueItems,
+    disableLocal: (tokenSnap.count ?? 0) > 0,
+    timezone: userTz,
   });
 
   const notifStatus: NotificationPermission | "unsupported" = notifSupported
     ? (permission ?? Notification.permission)
     : "unsupported";
 
-  // Push enable UI state (FCM)
   const [pushUi, setPushUi] = useState<PushUiState>({ status: "idle" });
 
-  // Test push UI state
-  const [testUi, setTestUi] = useState<TestUiState>({ status: "idle" });
+  const [globalEnabled, setGlobalEnabled] = useState<boolean>(true);
+  const [globalUi, setGlobalUi] = useState<GlobalUiState>({ status: "idle" });
 
-  // Local debug state snapshot
+  const [lastLog, setLastLog] = useState<LastLogState>({ status: "idle" });
+
+  const [quietEnabled, setQuietEnabled] = useState<boolean>(false);
+  const [quietStart, setQuietStart] = useState<string>("22:00");
+  const [quietEnd, setQuietEnd] = useState<string>("07:00");
+  const [quietUi, setQuietUi] = useState<QuietUiState>({ status: "idle" });
+  const [quietDirty, setQuietDirty] = useState<boolean>(false);
+
+  const deviceTz = useMemo(() => {
+    try {
+      return Intl.DateTimeFormat().resolvedOptions().timeZone || "Europe/London";
+    } catch {
+      return "Europe/London";
+    }
+  }, []);
+
+  const tzQuickList = useMemo(() => {
+    const base = [
+      deviceTz,
+      "Europe/London",
+      "UTC",
+      "Europe/Paris",
+      "Europe/Berlin",
+      "Europe/Rome",
+      "Europe/Madrid",
+      "Europe/Istanbul",
+      "Asia/Tehran",
+      "Asia/Dubai",
+      "Asia/Kolkata",
+      "Asia/Tokyo",
+      "America/New_York",
+      "America/Los_Angeles",
+      "Australia/Sydney",
+    ];
+    return Array.from(new Set(base)).filter(Boolean);
+  }, [deviceTz]);
+
+  const [tzMode, setTzMode] = useState<"quick" | "custom">("quick");
+  const [tzSelect, setTzSelect] = useState<string>(deviceTz);
+  const [tzCustom, setTzCustom] = useState<string>("");
+  const [tzDirty, setTzDirty] = useState<boolean>(false);
+  const [tzUi, setTzUi] = useState<TzUiState>({ status: "idle" });
+
   const [debugSnap, setDebugSnap] = useState<Record<string, any>>({});
+
+  const nowHMUser = useMemo(() => {
+    const hm = hmNowInTz(userTz);
+    if (hm) return hm;
+    const d = new Date();
+    const hh = String(d.getHours()).padStart(2, "0");
+    const mm = String(d.getMinutes()).padStart(2, "0");
+    return `${hh}:${mm}`;
+  }, [userTz]);
+
+  const quietActiveNow = useMemo(() => {
+    if (!quietEnabled) return false;
+    if (!isValidHHMM(quietStart) || !isValidHHMM(quietEnd)) return false;
+    return isWithinQuietHours(nowHMUser, quietStart, quietEnd);
+  }, [quietEnabled, quietStart, quietEnd, nowHMUser]);
 
   function readDebugSnapshot() {
     if (typeof window === "undefined") return {};
@@ -193,6 +454,21 @@ export default function Dashboard() {
         (window.matchMedia && window.matchMedia("(display-mode: standalone)").matches) || false,
       navigatorStandalone: Boolean(navAny.standalone),
       swController: Boolean(navigator.serviceWorker?.controller),
+      globalRemindersEnabled: globalEnabled,
+      tokenCount: tokenSnap.count,
+      lastReminderLog:
+        lastLog.status === "ok" ? lastLog.text : lastLog.status === "error" ? lastLog.text : lastLog.status,
+      userTz,
+      deviceTz,
+      tzMode,
+      tzSelect,
+      tzCustom,
+      tzDirty,
+      nowHMUser,
+      quietEnabled,
+      quietStart,
+      quietEnd,
+      quietActiveNow,
     };
   }
 
@@ -212,11 +488,137 @@ export default function Dashboard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [debugOn]);
 
+  useEffect(() => {
+    let cancelled = false;
+
+    async function run() {
+      if (!uid) return;
+
+      try {
+        await ensureUserDoc(db, uid, user?.email ?? null);
+
+        const snap = await getDoc(doc(db, "users", uid));
+        if (cancelled) return;
+
+        const data: any = snap.exists() ? snap.data() : {};
+
+        const tz = typeof data?.timezone === "string" && data.timezone ? data.timezone : deviceTz;
+        setUserTz(tz);
+
+        if (tzQuickList.includes(tz)) {
+          setTzMode("quick");
+          setTzSelect(tz);
+          setTzCustom("");
+        } else {
+          setTzMode("custom");
+          setTzSelect(deviceTz);
+          setTzCustom(tz);
+        }
+        setTzDirty(false);
+        setTzUi({ status: "idle" });
+
+        const enabled = data?.remindersEnabled;
+        setGlobalEnabled(enabled === false ? false : true);
+
+        const q = data?.quietHours ?? {};
+        const qEnabled = q?.enabled === true;
+        const qStart = isValidHHMM(q?.start) ? String(q.start) : "22:00";
+        const qEnd = isValidHHMM(q?.end) ? String(q.end) : "07:00";
+
+        setQuietEnabled(qEnabled);
+        setQuietStart(qStart);
+        setQuietEnd(qEnd);
+        setQuietDirty(false);
+      } catch (e) {
+        console.log("[Dashboard] ensure/load user doc error:", e);
+        if (!cancelled) {
+          setGlobalEnabled(true);
+          setUserTz(deviceTz);
+          setTzMode("quick");
+          setTzSelect(deviceTz);
+          setTzCustom("");
+          setTzDirty(false);
+          setTzUi({ status: "idle" });
+
+          setQuietEnabled(false);
+          setQuietStart("22:00");
+          setQuietEnd("07:00");
+          setQuietDirty(false);
+        }
+      }
+    }
+
+    run();
+    return () => {
+      cancelled = true;
+    };
+  }, [uid, user?.email, deviceTz, tzQuickList]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function run() {
+      if (!uid) {
+        setTokenSnap({ count: null, status: "idle" });
+        return;
+      }
+
+      setTokenSnap((s) => ({ ...s, status: "working" }));
+      try {
+        const colRef = collection(db, "users", uid, "pushTokens");
+        const agg = await getCountFromServer(colRef);
+        if (cancelled) return;
+
+        const n = agg.data().count ?? 0;
+        setTokenSnap({ count: n, status: "ok" });
+      } catch (e) {
+        console.log("[Dashboard] token snapshot error:", e);
+        if (!cancelled) setTokenSnap({ count: null, status: "error" });
+      }
+    }
+
+    run();
+    return () => {
+      cancelled = true;
+    };
+  }, [uid]);
+
+  async function refreshLastLog(targetUid: string) {
+    setLastLog({ status: "working" });
+    try {
+      const colRef = collection(db, "users", targetUid, "reminderLogs");
+      const qy = query(colRef, orderBy("sentAt", "desc"), limit(1));
+      const snap = await getDocs(qy);
+
+      if (snap.empty) {
+        setLastLog({ status: "ok", text: "No logs yet." });
+        return;
+      }
+
+      const d: any = snap.docs[0].data() || {};
+      const type = String(d.type ?? "unknown");
+      const dateKey = String(d.dateKey ?? "—");
+      const atHM = String(d.atHM ?? "—");
+      const tz = String(d.tz ?? "—");
+
+      setLastLog({ status: "ok", text: `Last sent: ${type} • ${dateKey} ${atHM} (${tz})` });
+    } catch (e: any) {
+      setLastLog({ status: "error", text: e?.message ? String(e.message) : "Could not load logs." });
+    }
+  }
+
+  useEffect(() => {
+    if (!uid) {
+      setLastLog({ status: "idle" });
+      return;
+    }
+    refreshLastLog(uid);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [uid]);
+
   async function enableNotificationsClick() {
     console.log("[Dashboard] EnableNotifications clicked");
     console.log("[Dashboard] before:", readDebugSnapshot());
-
-    setTestUi({ status: "idle" });
 
     if (!notifSupported) {
       setPushUi({ status: "error", msg: "Notifications API unsupported in this browser." });
@@ -231,7 +633,6 @@ export default function Dashboard() {
     setPushUi({ status: "working", msg: "Enabling push…" });
 
     try {
-      // Requests permission + gets FCM token + saves to Firestore (if needed)
       const res: any = await enablePushForUser(uid);
 
       console.log("[Dashboard] enablePushForUser result:", res);
@@ -244,6 +645,15 @@ export default function Dashboard() {
           setPushUi({ status: "enabled", msg: "Push enabled ✅ (token saved)" });
         } else {
           setPushUi({ status: "enabled", msg: "Push enabled ✅ (token updated)" });
+        }
+
+        try {
+          const colRef = collection(db, "users", uid, "pushTokens");
+          const agg = await getCountFromServer(colRef);
+          const n = agg.data().count ?? 0;
+          setTokenSnap({ count: n, status: "ok" });
+        } catch {
+          // ignore
         }
       } else {
         const msg =
@@ -268,22 +678,73 @@ export default function Dashboard() {
     }
   }
 
-  async function sendTestPushClick() {
+  async function toggleGlobalReminders(next: boolean) {
     if (!uid) return;
 
-    setTestUi({ status: "working", msg: "Sending test push…" });
+    setGlobalUi({ status: "working", msg: "Saving…" });
 
     try {
-      const res: any = await sendTestPush();
-
-      if (res?.ok) {
-        const msg = `Sent ✅ (success ${res.success}, failure ${res.failure}) • log: ${res.logId}`;
-        setTestUi({ status: "success", msg });
-      } else {
-        setTestUi({ status: "error", msg: res?.reason ?? "Test push failed." });
-      }
+      await setUserRemindersEnabled(db, uid, next);
+      setGlobalEnabled(next);
+      setGlobalUi({
+        status: "saved",
+        msg: next ? "Global reminders ON ✅" : "Global reminders OFF ✅ (no notifications will be sent)",
+      });
     } catch (e: any) {
-      setTestUi({ status: "error", msg: e?.message ? String(e.message) : "Test push failed." });
+      console.log("[Dashboard] set remindersEnabled error:", e);
+      setGlobalUi({ status: "error", msg: e?.message ? String(e.message) : "Could not update reminder setting." });
+    }
+  }
+
+  async function saveQuietHours() {
+    if (!uid) return;
+
+    setQuietUi({ status: "working", msg: "Saving…" });
+
+    const start = isValidHHMM(quietStart) ? quietStart : "22:00";
+    const end = isValidHHMM(quietEnd) ? quietEnd : "07:00";
+
+    try {
+      await setUserQuietHours(db, uid, {
+        enabled: Boolean(quietEnabled),
+        start,
+        end,
+      } as any);
+
+      setQuietStart(start);
+      setQuietEnd(end);
+      setQuietDirty(false);
+
+      setQuietUi({
+        status: "saved",
+        msg: quietEnabled ? `Quiet hours ON ✅ (${start}–${end})` : "Quiet hours OFF ✅",
+      });
+    } catch (e: any) {
+      console.log("[Dashboard] set quietHours error:", e);
+      setQuietUi({ status: "error", msg: e?.message ? String(e.message) : "Could not update quiet hours." });
+    }
+  }
+
+  async function saveTimezone() {
+    if (!uid) return;
+
+    setTzUi({ status: "working", msg: "Saving…" });
+
+    const candidate = tzMode === "custom" ? tzCustom.trim() : tzSelect.trim();
+
+    if (!isValidIanaTz(candidate)) {
+      setTzUi({ status: "error", msg: "Invalid timezone. Use a valid IANA name like Europe/London." });
+      return;
+    }
+
+    try {
+      await setUserTimezone(db, uid, candidate);
+      setUserTz(candidate);
+      setTzDirty(false);
+      setTzUi({ status: "saved", msg: `Timezone saved ✅ (${candidate})` });
+    } catch (e: any) {
+      console.log("[Dashboard] set timezone error:", e);
+      setTzUi({ status: "error", msg: e?.message ? String(e.message) : "Could not update timezone." });
     }
   }
 
@@ -295,7 +756,6 @@ export default function Dashboard() {
     return { activeHabitsCount, dueCount, doneCount, todayConsistency };
   }, [items, dueItems]);
 
-  // Next reminder (earliest HH:MM among today’s due habits with reminders enabled)
   const nextReminderHM = useMemo(() => {
     const times = (dueItems as any[])
       .filter((h) => Boolean(h?.reminderEnabled) && isValidHHMM(h?.reminderTime))
@@ -318,7 +778,6 @@ export default function Dashboard() {
     }
   }
 
-  // ===== Compute streak + 7d consistency (+ per-habit streak map) =====
   useEffect(() => {
     let cancelled = false;
 
@@ -348,7 +807,6 @@ export default function Dashboard() {
 
         if (cancelled) return;
 
-        // 7d consistency
         let due7 = 0;
         let done7 = 0;
 
@@ -366,7 +824,6 @@ export default function Dashboard() {
         const consistency = due7 === 0 ? "—" : `${Math.round((done7 / due7) * 100)}%`;
         setConsistency7d(consistency);
 
-        // Per-habit current streak (walk back from today, due days only)
         const streakMap: Record<string, number> = {};
         let best = 0;
 
@@ -407,20 +864,71 @@ export default function Dashboard() {
       cancelled = true;
     };
   }, [uid, habitsLoading, activeHabits, dateKey]);
-  // ================================================================
 
   const pushButtonDisabled =
     !notifSupported || pushUi.status === "working" || notifStatus === "denied" || !uid;
 
-  const testButtonDisabled =
-    !uid || notifStatus !== "granted" || testUi.status === "working" || pushUi.status === "working";
+  const tokenYesNo = useMemo(() => {
+    if (tokenSnap.status === "working") return "…";
+    if (tokenSnap.status === "error" || tokenSnap.count === null) return "—";
+    return tokenSnap.count > 0 ? "Yes" : "No";
+  }, [tokenSnap]);
 
+  const effectivePush = useMemo(() => {
+    return buildPushStatus({
+      globalEnabled,
+      quietEnabled,
+      quietActive: quietActiveNow,
+      quietStart,
+      quietEnd,
+      notifSupported,
+      secureContext,
+      notifStatus,
+      tokenCount: tokenSnap.count,
+      swControlled: typeof window !== "undefined" ? Boolean(navigator.serviceWorker?.controller) : false,
+    });
+  }, [
+    globalEnabled,
+    quietEnabled,
+    quietActiveNow,
+    quietStart,
+    quietEnd,
+    notifSupported,
+    secureContext,
+    notifStatus,
+    tokenSnap.count,
+  ]);
+
+  const effectiveToneClass =
+    effectivePush.tone === "good"
+      ? "border-emerald-300/25 bg-emerald-500/10"
+      : effectivePush.tone === "warn"
+      ? "border-amber-300/25 bg-amber-500/10"
+      : "border-rose-300/25 bg-rose-500/10";
+
+  const effectiveHeadlineClass =
+    effectivePush.tone === "good"
+      ? "text-emerald-200"
+      : effectivePush.tone === "warn"
+      ? "text-amber-200"
+      : "text-rose-200";
+
+
+  // --------------------------
+  // Today UI summary helpers
+  // --------------------------
+  const todayDueCount = dueItems.length;
+  const todayDoneCount = dueItems.filter((x: any) => x.done).length;
+  const todayLeftCount = Math.max(0, todayDueCount - todayDoneCount);
+  const todayRatePct = todayDueCount === 0 ? 0 : Math.round((todayDoneCount / todayDueCount) * 100);
+
+      
   return (
     <Scene className="min-h-screen relative overflow-hidden" contentClassName="relative p-4 sm:p-6">
       <div className="max-w-5xl mx-auto">
         {/* Header */}
-        <div className="flex items-center justify-between gap-3 mb-4">
-          <div className="flex items-center gap-3">
+        <div className="flex items-center justify-between gap-3 mb-5">
+          <div className="flex items-center gap-3 min-w-0">
             <div
               className="h-10 w-10 rounded-2xl border border-white/14
                          bg-gradient-to-b from-white/[0.14] to-white/[0.06]
@@ -431,20 +939,20 @@ export default function Dashboard() {
               {initials(user?.email)}
             </div>
 
-            <div>
-              <div className="mb-1 inline-flex items-center gap-2 rounded-full border border-white/14 bg-white/[0.07] px-3 py-1 text-[11px] text-white/80 backdrop-blur-2xl">
+            <div className="min-w-0">
+              <div className="mb-1 inline-flex items-center gap-3 rounded-full border border-white/14 bg-white/[0.07] px-3 py-1 text-[11px] text-white/80 backdrop-blur-2xl">
                 <span className="h-2 w-2 rounded-full bg-emerald-400" />
                 BadAss Habits
               </div>
 
               <div className="text-sm font-semibold text-white">Dashboard</div>
-              <div className="text-xs text-white/60">
+              <div className="text-xs text-white/60 truncate">
                 Signed in as <span className="font-medium text-white/80">{user?.email}</span>
               </div>
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-3">
             <Link
               to="/habits"
               className="rounded-xl border border-white/14
@@ -480,78 +988,103 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* Notifications control under avatar (top-left) */}
-        <div className="mb-6 flex items-center justify-between gap-3">
-          <div className="min-w-0">
-            <div className="text-xs font-semibold text-white/75">Notifications</div>
-            <div className="mt-1 text-xs text-white/50">
-              {permissionHelp(notifStatus)}
-              {notifStatus === "denied" ? (
-                <span className="text-white/60">
-                  {" "}
-                  (Chrome: click the 🔒 icon → Site settings → Notifications → Allow)
+        {/* TOP: Notifications */}
+        <DarkCard
+          title="Notifications"
+          subtitle="Push status, timezone override, and quiet hours."
+          right={
+            <span className="inline-flex items-center rounded-full border border-white/14 bg-white/[0.07] px-3 py-1 text-xs text-white/75 backdrop-blur-2xl">
+              MVP
+            </span>
+          }
+        >
+          {/* Status pills */}
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="inline-flex items-center gap-2 rounded-full border border-white/14 bg-white/[0.07] px-2.5 py-1 text-[11px] text-white/80 backdrop-blur-2xl">
+              Global reminders:
+              <span className={globalEnabled ? "text-emerald-300/90 font-semibold" : "text-rose-300/90 font-semibold"}>
+                {globalEnabled ? "ON" : "OFF"}
+              </span>
+            </span>
+
+            <span className="inline-flex items-center gap-2 rounded-full border border-white/14 bg-white/[0.07] px-2.5 py-1 text-[11px] text-white/80 backdrop-blur-2xl">
+              Push permission:
+              <span
+                className={
+                  notifStatus === "granted"
+                    ? "text-emerald-300/90 font-semibold"
+                    : notifStatus === "denied"
+                    ? "text-rose-300/90 font-semibold"
+                    : "text-white/70 font-semibold"
+                }
+              >
+                {permissionLabel(notifStatus)}
+              </span>
+            </span>
+
+            <span className="inline-flex items-center gap-2 rounded-full border border-white/14 bg-white/[0.07] px-2.5 py-1 text-[11px] text-white/80 backdrop-blur-2xl">
+              Token: <span className="text-white/80 font-semibold">{tokenYesNo}</span>
+            </span>
+
+            <span className="inline-flex items-center gap-2 rounded-full border border-white/14 bg-white/[0.07] px-2.5 py-1 text-[11px] text-white/80 backdrop-blur-2xl">
+              SW:
+              <span className="text-white/80 font-semibold">
+                {typeof window === "undefined" ? "—" : navigator.serviceWorker?.controller ? "Active" : "Not active"}
+              </span>
+            </span>
+
+            <span className="inline-flex items-center gap-2 rounded-full border border-white/14 bg-white/[0.07] px-2.5 py-1 text-[11px] text-white/80 backdrop-blur-2xl">
+              Timezone: <span className="text-white/80 font-semibold">{userTz}</span>
+              {userTz === deviceTz ? (
+                <span className="text-white/55 font-semibold">• device</span>
+              ) : (
+                <span className="text-amber-200 font-semibold">• override</span>
+              )}
+            </span>
+
+            <span className="inline-flex items-center gap-2 rounded-full border border-white/14 bg-white/[0.07] px-2.5 py-1 text-[11px] text-white/80 backdrop-blur-2xl">
+              Quiet hours:
+              <span className={quietEnabled ? "text-emerald-300/90 font-semibold" : "text-white/70 font-semibold"}>
+                {quietEnabled ? "ON" : "OFF"}
+              </span>
+              {quietEnabled ? (
+                <span className={quietActiveNow ? "text-amber-200 font-semibold" : "text-white/60 font-semibold"}>
+                  • {quietStart}–{quietEnd} {quietActiveNow ? "(active now)" : ""}
                 </span>
               ) : null}
-            </div>
-
-            <div className="mt-2 text-[11px] text-white/45">
-              Exact reminders: sent at each habit’s time (if enabled). Daily digest:{" "}
-              <span className="text-white/70">16:00</span> (only if you have ≥1 due habit).
-              {nextReminderHM ? (
-                <span className="text-white/60">
-                  {" "}
-                  • Next reminder today: <span className="text-white/80">{nextReminderHM}</span>
-                </span>
-              ) : null}
-            </div>
-
-            {pushUi.status !== "idle" ? (
-              <div
-                className={`mt-2 text-[11px] ${
-                  pushUi.status === "enabled"
-                    ? "text-emerald-300/90"
-                    : pushUi.status === "error"
-                    ? "text-rose-300/90"
-                    : "text-white/55"
-                }`}
-              >
-                {pushUi.msg}
-              </div>
-            ) : null}
-
-            {testUi.status !== "idle" ? (
-              <div
-                className={`mt-2 text-[11px] ${
-                  testUi.status === "success"
-                    ? "text-emerald-300/90"
-                    : testUi.status === "error"
-                    ? "text-rose-300/90"
-                    : "text-white/55"
-                }`}
-              >
-                {testUi.msg}
-              </div>
-            ) : null}
+            </span>
           </div>
 
-          <div className="flex items-center gap-2 shrink-0">
+          {/* Primary action buttons */}
+          <div className="mt-4 flex flex-col sm:flex-row sm:items-center gap-3">
             <button
               type="button"
-              onClick={sendTestPushClick}
-              disabled={testButtonDisabled}
-              className="rounded-xl border border-white/14 bg-white/[0.08] px-4 py-2 text-sm font-semibold text-white/90
-                         hover:bg-white/[0.12] disabled:opacity-60 disabled:hover:bg-white/[0.08]
-                         shadow-[0_18px_55px_-45px_rgba(0,0,0,0.98)]"
-              title={notifStatus !== "granted" ? "Enable push first" : "Sends a test push and writes a log entry"}
+              onClick={() => toggleGlobalReminders(!globalEnabled)}
+              disabled={!uid || globalUi.status === "working" || pushUi.status === "working"}
+              className={`relative inline-flex h-9 w-44 items-center rounded-full border transition
+                ${
+                  globalEnabled
+                    ? "border-white/20 bg-white/[0.16]"
+                    : "border-white/14 bg-white/[0.08] hover:bg-white/[0.12]"
+                }
+                disabled:opacity-60`}
+              aria-label="Toggle global reminders"
+              title="Turns ALL notifications on/off (exact reminders + daily digest)"
             >
-              {testUi.status === "working" ? "Sending…" : "Send test push"}
+              <span
+                className={`absolute left-1 top-1 h-7 w-7 rounded-full transition
+                  ${globalEnabled ? "translate-x-[120px] bg-white/80" : "translate-x-0 bg-white/55"}`}
+              />
+              <span className="w-full text-center text-[11px] font-semibold text-white/80">
+                {globalUi.status === "working" ? "Saving…" : globalEnabled ? "Reminders ON" : "Reminders OFF"}
+              </span>
             </button>
 
             <button
               type="button"
               onClick={enableNotificationsClick}
               disabled={pushButtonDisabled}
-              className={`relative inline-flex h-9 w-24 items-center rounded-full border transition
+              className={`relative inline-flex h-9 w-44 items-center rounded-full border transition
                 ${
                   notifStatus === "granted"
                     ? "border-white/20 bg-white/[0.16]"
@@ -563,22 +1096,344 @@ export default function Dashboard() {
             >
               <span
                 className={`absolute left-1 top-1 h-7 w-7 rounded-full transition
-                  ${notifStatus === "granted" ? "translate-x-[56px] bg-white/80" : "translate-x-0 bg-white/55"}`}
+                  ${notifStatus === "granted" ? "translate-x-[120px] bg-white/80" : "translate-x-0 bg-white/55"}`}
               />
               <span className="w-full text-center text-[11px] font-semibold text-white/80">
-                {pushUi.status === "working" ? "…" : permissionLabel(notifStatus)}
+                {pushUi.status === "working" ? "…" : `Push ${permissionLabel(notifStatus)}`}
               </span>
             </button>
           </div>
-        </div>
+
+          {/* Timezone controls */}
+          <div className={`mt-3 ${tileClass}`}>
+            <div className="flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <div className="text-xs font-semibold text-white/80">Timezone</div>
+                <div className="mt-1 text-[11px] text-white/55">
+                  Used for digest time, exact reminders, and quiet hours. Device timezone:{" "}
+                  <span className="text-white/75">{deviceTz}</span>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setTzMode("quick");
+                  setTzSelect(deviceTz);
+                  setTzCustom("");
+                  setTzDirty(true);
+                  setTzUi({ status: "idle" });
+                }}
+                disabled={!uid || tzUi.status === "working"}
+                className="rounded-xl border border-white/14 bg-white/[0.08] px-4 py-2 text-sm font-semibold text-white/90
+                           hover:bg-white/[0.12] disabled:opacity-60 disabled:hover:bg-white/[0.08]
+                           shadow-[0_18px_55px_-45px_rgba(0,0,0,0.98)]"
+                title="Set timezone to match this device"
+              >
+                Use device TZ
+              </button>
+            </div>
+
+            <div className="mt-3 flex flex-col gap-3">
+              <div className="flex items-center gap-3 flex-wrap">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setTzMode("quick");
+                    setTzDirty(true);
+                    setTzUi({ status: "idle" });
+                  }}
+                  className={`rounded-full border px-3 py-1 text-[11px] font-semibold transition
+                    ${
+                      tzMode === "quick"
+                        ? "border-white/22 bg-white/[0.12] text-white"
+                        : "border-white/14 bg-white/[0.07] text-white/70 hover:bg-white/[0.10]"
+                    }`}
+                >
+                  Quick list
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setTzMode("custom");
+                    setTzDirty(true);
+                    setTzUi({ status: "idle" });
+                  }}
+                  className={`rounded-full border px-3 py-1 text-[11px] font-semibold transition
+                    ${
+                      tzMode === "custom"
+                        ? "border-white/22 bg-white/[0.12] text-white"
+                        : "border-white/14 bg-white/[0.07] text-white/70 hover:bg-white/[0.10]"
+                    }`}
+                >
+                  Custom
+                </button>
+
+                <div className="text-[11px] text-white/55">
+                  Now in selected TZ: <span className="text-white/80">{nowHMUser}</span>
+                </div>
+              </div>
+
+              {tzMode === "quick" ? (
+                <div className="flex flex-col sm:flex-row sm:items-end gap-3">
+                  <label className="flex flex-col gap-1">
+                    <span className="text-[11px] text-white/60">Timezone</span>
+                    <select
+                      value={tzSelect}
+                      onChange={(e) => {
+                        setTzSelect(e.target.value);
+                        setTzDirty(true);
+                        setTzUi({ status: "idle" });
+                      }}
+                      className="h-9 w-[320px] max-w-full rounded-xl border border-white/14 bg-white/[0.07] px-3 text-sm text-white/90 outline-none"
+                    >
+                      {tzQuickList.map((z) => (
+                        <option key={z} value={z}>
+                          {z}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+
+                  <button
+                    type="button"
+                    onClick={saveTimezone}
+                    disabled={!uid || tzUi.status === "working" || !tzDirty}
+                    className="rounded-xl border border-white/14 bg-white/[0.08] px-4 py-2 text-sm font-semibold text-white/90
+                               hover:bg-white/[0.12] disabled:opacity-60 disabled:hover:bg-white/[0.08]
+                               shadow-[0_18px_55px_-45px_rgba(0,0,0,0.98)]"
+                    title={!tzDirty ? "No changes to save" : "Save timezone"}
+                  >
+                    {tzUi.status === "working" ? "Saving…" : "Save timezone"}
+                  </button>
+                </div>
+              ) : (
+                <div className="flex flex-col sm:flex-row sm:items-end gap-3">
+                  <label className="flex flex-col gap-1">
+                    <span className="text-[11px] text-white/60">Custom IANA timezone</span>
+                    <input
+                      value={tzCustom}
+                      onChange={(e) => {
+                        setTzCustom(e.target.value);
+                        setTzDirty(true);
+                        setTzUi({ status: "idle" });
+                      }}
+                      placeholder="e.g. Europe/London"
+                      className="h-9 w-[320px] max-w-full rounded-xl border border-white/14 bg-white/[0.07] px-3 text-sm text-white/90 outline-none"
+                    />
+                    <div className="text-[11px] text-white/45 mt-1">
+                      Tip: must be an IANA name (Region/City), e.g.{" "}
+                      <span className="text-white/70">America/New_York</span>
+                    </div>
+                  </label>
+
+                  <button
+                    type="button"
+                    onClick={saveTimezone}
+                    disabled={!uid || tzUi.status === "working" || !tzDirty}
+                    className="rounded-xl border border-white/14 bg-white/[0.08] px-4 py-2 text-sm font-semibold text-white/90
+                               hover:bg-white/[0.12] disabled:opacity-60 disabled:hover:bg-white/[0.08]
+                               shadow-[0_18px_55px_-45px_rgba(0,0,0,0.98)]"
+                    title={!tzDirty ? "No changes to save" : "Save timezone"}
+                  >
+                    {tzUi.status === "working" ? "Saving…" : "Save timezone"}
+                  </button>
+                </div>
+              )}
+
+              {tzUi.status !== "idle" ? (
+                <div
+                  className={`text-[11px] ${
+                    tzUi.status === "saved"
+                      ? "text-emerald-300/90"
+                      : tzUi.status === "error"
+                      ? "text-rose-300/90"
+                      : "text-white/55"
+                  }`}
+                >
+                  {tzUi.msg}
+                </div>
+              ) : null}
+            </div>
+          </div>
+
+          {/* Quiet Hours controls */}
+          <div className={`mt-3 ${tileClass}`}>
+            <div className="flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <div className="text-xs font-semibold text-white/80">Quiet Hours</div>
+                <div className="mt-1 text-[11px] text-white/55">
+                  Pauses all reminders (digest + exact) during the window, using your timezone:{" "}
+                  <span className="text-white/75">{userTz}</span> • now{" "}
+                  <span className="text-white/75">{nowHMUser}</span>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => {
+                  const next = !quietEnabled;
+                  setQuietEnabled(next);
+                  setQuietDirty(true);
+                  setQuietUi({ status: "idle" });
+                }}
+                disabled={!uid || quietUi.status === "working"}
+                className={`relative inline-flex h-9 w-28 items-center rounded-full border transition
+                    ${
+                      quietEnabled
+                        ? "border-white/20 bg-white/[0.16]"
+                        : "border-white/14 bg-white/[0.08] hover:bg-white/[0.12]"
+                    }
+                    disabled:opacity-60`}
+                aria-label="Toggle quiet hours"
+                title="Pauses all reminders during the quiet window"
+              >
+                <span
+                  className={`absolute left-1 top-1 h-7 w-7 rounded-full transition
+                      ${quietEnabled ? "translate-x-[72px] bg-white/80" : "translate-x-0 bg-white/55"}`}
+                />
+                <span className="w-full text-center text-[11px] font-semibold text-white/80">
+                  {quietEnabled ? "Quiet ON" : "Quiet OFF"}
+                </span>
+              </button>
+            </div>
+
+            <div className="mt-3 flex flex-col sm:flex-row sm:items-end gap-3">
+              <label className="flex flex-col gap-1">
+                <span className="text-[11px] text-white/60">Start</span>
+                <input
+                  type="time"
+                  value={quietStart}
+                  onChange={(e) => {
+                    setQuietStart(e.target.value);
+                    setQuietDirty(true);
+                    setQuietUi({ status: "idle" });
+                  }}
+                  className="h-9 w-40 rounded-xl border border-white/14 bg-white/[0.07] px-3 text-sm text-white/90 outline-none"
+                />
+              </label>
+
+              <label className="flex flex-col gap-1">
+                <span className="text-[11px] text-white/60">End</span>
+                <input
+                  type="time"
+                  value={quietEnd}
+                  onChange={(e) => {
+                    setQuietEnd(e.target.value);
+                    setQuietDirty(true);
+                    setQuietUi({ status: "idle" });
+                  }}
+                  className="h-9 w-40 rounded-xl border border-white/14 bg-white/[0.07] px-3 text-sm text-white/90 outline-none"
+                />
+              </label>
+
+              <button
+                type="button"
+                onClick={saveQuietHours}
+                disabled={!uid || quietUi.status === "working" || !quietDirty}
+                className="rounded-xl border border-white/14 bg-white/[0.08] px-4 py-2 text-sm font-semibold text-white/90
+                           hover:bg-white/[0.12] disabled:opacity-60 disabled:hover:bg-white/[0.08]
+                           shadow-[0_18px_55px_-45px_rgba(0,0,0,0.98)]"
+                title={!quietDirty ? "No changes to save" : "Save quiet hours"}
+              >
+                {quietUi.status === "working" ? "Saving…" : "Save quiet hours"}
+              </button>
+            </div>
+
+            {quietUi.status !== "idle" ? (
+              <div
+                className={`mt-2 text-[11px] ${
+                  quietUi.status === "saved"
+                    ? "text-emerald-300/90"
+                    : quietUi.status === "error"
+                    ? "text-rose-300/90"
+                    : "text-white/55"
+                }`}
+              >
+                {quietUi.msg}
+              </div>
+            ) : null}
+
+            {quietEnabled && quietActiveNow ? (
+              <div className="mt-2 text-[11px] text-amber-200/90">
+                Quiet hours are active now — reminders are paused until{" "}
+                <span className="text-white/80">{quietEnd}</span>.
+              </div>
+            ) : null}
+          </div>
+
+          {/* Effective push status */}
+          <div className={`mt-3 ${toneTileClass} ${effectiveToneClass}`}>
+            <div className={`text-sm font-semibold ${effectiveHeadlineClass}`}>{effectivePush.headline}</div>
+            <div className="mt-1 text-xs text-white/70">{effectivePush.action}</div>
+
+            <div className="mt-2 text-[11px] text-white/60">
+              {lastLog.status === "working"
+                ? "Loading last log…"
+                : lastLog.status === "ok"
+                ? lastLog.text
+                : lastLog.status === "error"
+                ? `Last log: ${lastLog.text}`
+                : null}
+            </div>
+          </div>
+
+          <div className="mt-2 text-xs text-white/50">
+            {permissionHelp(notifStatus)}
+            {notifStatus === "denied" ? (
+              <span className="text-white/60"> (Chrome: click the 🔒 icon → Site settings → Notifications → Allow)</span>
+            ) : null}
+          </div>
+
+          <div className="mt-2 text-[11px] text-white/45">
+            Exact reminders: sent at each habit’s time (if enabled). Daily digest:{" "}
+            <span className="text-white/70">16:00</span> (only if you have ≥1 due habit).
+            {nextReminderHM ? (
+              <span className="text-white/60">
+                {" "}
+                • Next reminder today: <span className="text-white/80">{nextReminderHM}</span>
+              </span>
+            ) : null}
+          </div>
+
+          {/* Inline messages */}
+          {globalUi.status !== "idle" ? (
+            <div
+              className={`mt-2 text-[11px] ${
+                globalUi.status === "saved"
+                  ? "text-emerald-300/90"
+                  : globalUi.status === "error"
+                  ? "text-rose-300/90"
+                  : "text-white/55"
+              }`}
+            >
+              {globalUi.msg}
+            </div>
+          ) : null}
+
+          {pushUi.status !== "idle" ? (
+            <div
+              className={`mt-2 text-[11px] ${
+                pushUi.status === "enabled"
+                  ? "text-emerald-300/90"
+                  : pushUi.status === "error"
+                  ? "text-rose-300/90"
+                  : "text-white/55"
+              }`}
+            >
+              {pushUi.msg}
+            </div>
+          ) : null}
+        </DarkCard>
 
         {/* Debug panel */}
         {debugOn ? (
-          <div className="mb-6 rounded-2xl border border-white/14 bg-white/[0.06] p-4 text-xs text-white/75 backdrop-blur-2xl">
+          <div className="mt-5 mb-6 rounded-2xl border border-white/14 bg-white/[0.07] p-4 text-xs text-white/75 backdrop-blur-2xl">
             <div className="font-semibold text-white/85">DEBUG</div>
-            <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-3">
               {Object.entries(debugSnap).map(([k, v]) => (
-                <div key={k} className="rounded-xl border border-white/10 bg-black/10 p-3">
+                <div key={k} className="rounded-xl border border-white/10 bg-black/10 p-4">
                   <div className="text-white/55">{k}</div>
                   <div className="mt-1 break-all text-white/85">{String(v)}</div>
                 </div>
@@ -588,7 +1443,9 @@ export default function Dashboard() {
               Tip: open DevTools Console and search for <span className="text-white/70">[Dashboard]</span>.
             </div>
           </div>
-        ) : null}
+        ) : (
+          <div className="mt-5" />
+        )}
 
         {/* Top grid */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 sm:gap-5">
@@ -602,8 +1459,46 @@ export default function Dashboard() {
                 </span>
               }
             >
+              {/* Today summary (UI only) */}
+              {!loading && todayDueCount > 0 && (
+                <>
+                  <div className="mb-3 flex flex-wrap gap-2 text-[11px]">
+                    <span className="rounded-full border border-white/14 bg-white/[0.07] px-3 py-1 text-white/80">
+                      Due <span className="font-semibold">{todayDueCount}</span>
+                    </span>
+
+                    <span className="rounded-full border border-white/14 bg-white/[0.07] px-3 py-1 text-white/80">
+                      Done <span className="font-semibold">{todayDoneCount}</span>
+                    </span>
+
+                    <span className="rounded-full border border-white/14 bg-white/[0.07] px-3 py-1 text-white/80">
+                      Left <span className="font-semibold">{todayLeftCount}</span>
+                    </span>
+
+                    <span className="rounded-full border border-white/14 bg-white/[0.07] px-3 py-1 text-white/80">
+                      Rate <span className="font-semibold">{todayRatePct}%</span>
+                    </span>
+                  </div>
+
+                  {/* Progress bar */}
+                  <div className="mb-4">
+                    <div className="h-2 w-full overflow-hidden rounded-full border border-white/14 bg-black/20">
+                      <div
+                        className="h-full bg-white/35"
+                        style={{ width: `${todayRatePct}%` }}
+                      />
+                    </div>
+                    <div className="mt-1 text-[11px] text-white/45">
+                      {todayDoneCount} of {todayDueCount} done
+                    </div>
+                  </div>
+                </>
+              )}
+
+
               {loading ? (
-                <div className="text-sm text-white/70">Loading…</div>
+                <div className="text-sm text-white/70">
+                  Loading…</div>
               ) : dueItems.length === 0 ? (
                 <div className="rounded-xl border border-dashed border-white/16 bg-black/10 px-4 py-5">
                   <p className="text-sm text-white/70">No habits due today.</p>
@@ -626,7 +1521,7 @@ export default function Dashboard() {
                                    flex items-center justify-between gap-3"
                       >
                         <div className="min-w-0">
-                          <div className="flex items-center gap-2 flex-wrap">
+                          <div className="flex items-center gap-3 flex-wrap">
                             <div className="text-sm font-semibold text-white truncate">{h.name}</div>
 
                             {remOn ? <ReminderPill time={remTime} /> : <ReminderPill off />}
@@ -634,7 +1529,19 @@ export default function Dashboard() {
                             <StreakPill n={streak} />
                           </div>
 
-                          <div className="mt-1 text-xs text-white/55">{h.done ? "Done ✅" : "Not done yet"}</div>
+                          <div className="mt-1 flex items-center gap-2 text-xs">
+  <span
+    className={
+      h.done
+        ? "inline-flex items-center gap-1 rounded-full border border-emerald-300/25 bg-emerald-500/10 px-2 py-0.5 text-emerald-200"
+        : "inline-flex items-center gap-1 rounded-full border border-white/14 bg-white/[0.06] px-2 py-0.5 text-white/65"
+    }
+  >
+    {h.done ? "Done" : "Not done"}
+  </span>
+  {h.done ? <span className="text-white/45">✅</span> : null}
+</div>
+
                         </div>
 
                         <button
@@ -643,7 +1550,7 @@ export default function Dashboard() {
                           className={`rounded-xl border px-4 py-2 text-xs font-semibold transition
                             ${
                               h.done
-                                ? "border-white/18 bg-white/[0.06] text-white/80 hover:bg-white/[0.10]"
+                                ? "border-white/18 bg-white/[0.07] text-white/80 hover:bg-white/[0.10]"
                                 : "border-white/22 bg-white/[0.12] text-white hover:bg-white/[0.16]"
                             }
                             disabled:opacity-50`}
@@ -708,15 +1615,15 @@ export default function Dashboard() {
             <div className="rounded-xl border border-dashed border-white/16 bg-black/10 px-4 py-5">
               <p className="text-sm text-white/70">Next we’ll add:</p>
               <ul className="mt-3 space-y-2 text-sm text-white/70">
-                <li className="flex gap-2">
+                <li className="flex gap-3">
                   <span className="text-white/50">•</span>
                   <span>Longest streak (true, lifetime) + goals</span>
                 </li>
-                <li className="flex gap-2">
+                <li className="flex gap-3">
                   <span className="text-white/50">•</span>
                   <span>“Missed due days” + recovery suggestions</span>
                 </li>
-                <li className="flex gap-2">
+                <li className="flex gap-3">
                   <span className="text-white/50">•</span>
                   <span>Weekly trend + habit ranking</span>
                 </li>
@@ -761,5 +1668,5 @@ export default function Dashboard() {
 }
 
 // ==========================
-// End of Version 18 — src/pages/Dashboard.tsx
+// End of Version 25 — src/pages/Dashboard.tsx
 // ==========================

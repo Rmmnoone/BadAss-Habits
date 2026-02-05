@@ -1,8 +1,7 @@
 // ==========================
-// Version 5 — src/components/AuthLayout.tsx
-// - Uses shared <Scene/> for consistent BadAss Habits background
-// - Fix: preserves Scene wrapper positioning (relative + overflow-hidden)
-// - Keeps glass/3D card + top pill + link
+// Version 6 — src/components/AuthLayout.tsx
+// - v5 + cleanup (deduped; no behavior change)
+// - Uses shared <Scene/> for consistent background
 // ==========================
 import React from "react";
 import { Link } from "react-router-dom";
@@ -22,7 +21,6 @@ export default function AuthLayout({ title, subtitle, children, topRightLink }: 
       contentClassName="relative min-h-screen flex items-center justify-center p-4"
     >
       <div className="w-full max-w-md">
-        {/* Small top row */}
         <div className="flex items-center justify-between mb-4">
           <div
             className="inline-flex items-center gap-2 rounded-full border border-white/14
@@ -44,7 +42,6 @@ export default function AuthLayout({ title, subtitle, children, topRightLink }: 
           )}
         </div>
 
-        {/* Glass / 3D Card */}
         <div className="relative rounded-2xl overflow-hidden">
           <div
             className="pointer-events-none absolute -inset-[1px] rounded-2xl opacity-70 blur
@@ -64,9 +61,7 @@ export default function AuthLayout({ title, subtitle, children, topRightLink }: 
             </div>
 
             <div className="relative p-6 sm:p-7">
-              <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight text-white">
-                {title}
-              </h1>
+              <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight text-white">{title}</h1>
               {subtitle ? <p className="mt-2 text-sm text-white/70">{subtitle}</p> : null}
 
               <div className="mt-6">{children}</div>
@@ -83,5 +78,5 @@ export default function AuthLayout({ title, subtitle, children, topRightLink }: 
 }
 
 // ==========================
-// End of Version 5 — src/components/AuthLayout.tsx
+// End of Version 6 — src/components/AuthLayout.tsx
 // ==========================

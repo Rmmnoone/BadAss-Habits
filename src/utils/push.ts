@@ -1,7 +1,10 @@
 // ==========================
-// Version 5 — src/utils/push.ts
-// - v4 + fixes TS6133: `changed` was declared but never read
-//   * Removes the unused local and computes changed inline
+// Version 6 — src/utils/push.ts
+// - v5 + production hardening + better error visibility
+//   * Validates Firebase app config at runtime (apiKey/appId/senderId)
+//   * Validates VAPID key presence + basic format check
+//   * Wraps getToken in try/catch and returns actionable reasons
+//   * Adds safe debug logging (no secrets) for prod troubleshooting
 // - Keeps token lifecycle logic the same
 // - Keeps callable sendTestPush helper (auth required)
 // ==========================
@@ -46,6 +49,44 @@ async function getActiveServiceWorkerRegistration() {
   return reg;
 }
 
+function getFirebaseOptionsSafe() {
+  // firebase/app exposes options on the app object (type is not public on all builds)
+  const opts = (app as any)?.options ?? {};
+  return {
+    projectId: opts.projectId ? String(opts.projectId) : "",
+    appId: opts.appId ? String(opts.appId) : "",
+    apiKeyPresent: Boolean(opts.apiKey),
+    messagingSenderIdPresent: Boolean(opts.messagingSenderId),
+  };
+}
+
+function isVapidKeyLikelyValid(k: string) {
+  // VAPID public keys are typically ~87-88 chars base64url
+  // We won’t over-validate, just catch obvious bad values.
+  const s = String(k || "").trim();
+  return s.length >= 50 && !s.includes(" ") && !s.includes("\n");
+}
+
+function errorToReason(e: any): string {
+  const code = e?.code ? String(e.code) : "";
+  const msg = e?.message ? String(e.message) : "";
+
+  // Firebase Messaging common errors
+  if (code.includes("messaging/permission-blocked") || msg.toLowerCase().includes("permission")) {
+    return "permission-blocked";
+  }
+  if (code.includes("messaging/unsupported-browser")) {
+    return "unsupported-browser";
+  }
+  if (code.includes("messaging/token-subscribe-failed") || msg.toLowerCase().includes("token-subscribe")) {
+    return "token-subscribe-failed";
+  }
+  if (msg.includes("401") || msg.toLowerCase().includes("unauthorized")) {
+    return "unauthorized-401";
+  }
+  return code || msg || "unknown-error";
+}
+
 type EnablePushResult =
   | { ok: true; token: string; changed: boolean; created: boolean }
   | {
@@ -56,8 +97,12 @@ type EnablePushResult =
         | "notifications-not-supported"
         | "permission-not-granted"
         | "missing-vapid-key"
+        | "invalid-vapid-key"
+        | "missing-firebase-config"
         | "no-service-worker"
+        | "get-token-failed"
         | "no-token";
+      detail?: string;
     };
 
 export async function enablePushForUser(uid: string): Promise<EnablePushResult> {
@@ -84,6 +129,19 @@ export async function enablePushForUser(uid: string): Promise<EnablePushResult> 
   if (!VAPID_KEY) {
     return { ok: false, reason: "missing-vapid-key" };
   }
+  if (!isVapidKeyLikelyValid(VAPID_KEY)) {
+    return { ok: false, reason: "invalid-vapid-key" };
+  }
+
+  // ✅ Runtime config validation (most common prod mistake: missing envs in build)
+  const opts = getFirebaseOptionsSafe();
+  if (!opts.apiKeyPresent || !opts.appId || !opts.messagingSenderIdPresent || !opts.projectId) {
+    console.error("[push] Missing Firebase config at runtime:", {
+      ...opts,
+      origin: window.location.origin,
+    });
+    return { ok: false, reason: "missing-firebase-config" };
+  }
 
   const swReg = await getActiveServiceWorkerRegistration();
   if (!swReg) {
@@ -92,10 +150,27 @@ export async function enablePushForUser(uid: string): Promise<EnablePushResult> 
 
   const messaging = getMessaging(app);
 
-  const token = await getToken(messaging, {
-    vapidKey: VAPID_KEY,
-    serviceWorkerRegistration: swReg,
-  });
+  let token = "";
+  try {
+    token = await getToken(messaging, {
+      vapidKey: VAPID_KEY,
+      serviceWorkerRegistration: swReg,
+    });
+  } catch (e: any) {
+    const detail = errorToReason(e);
+
+    // Helpful console breadcrumb (no secrets)
+    console.error("[push] getToken failed:", {
+      detail,
+      origin: window.location.origin,
+      projectId: opts.projectId,
+      appIdPresent: Boolean(opts.appId),
+      apiKeyPresent: opts.apiKeyPresent,
+      senderIdPresent: opts.messagingSenderIdPresent,
+    });
+
+    return { ok: false, reason: "get-token-failed", detail };
+  }
 
   if (!token) {
     return { ok: false, reason: "no-token" };
@@ -200,5 +275,5 @@ export async function sendTestPush(): Promise<TestPushResult> {
 }
 
 // ==========================
-// End of Version 5 — src/utils/push.ts
+// End of Version 6 — src/utils/push.ts
 // ==========================

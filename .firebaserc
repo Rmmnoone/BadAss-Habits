@@ -1,5 +1,8 @@
 {
   "projects": {
-    "default": "habit-tracker-2c99b"
-  }
+    "default": "badass-habits",
+    "prod": "badass-habits"
+  },
+  "targets": {},
+  "etags": {}
 }

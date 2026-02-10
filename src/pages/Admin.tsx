@@ -1,9 +1,7 @@
 // ==========================
-// Version 2 — src/pages/Admin.tsx
-// - v1 + Admin tools:
-//   * adminWhoAmI() -> show current admin claims
-//   * adminSetAdmin() -> grant/revoke admin for selected user
-// - Keeps users list + per-user summary + reminder logs
+// Version 3 — src/pages/Admin.tsx
+// - v2 + Fix build error (usersErr is now rendered)
+// - Shows load errors in the Users panel
 // ==========================
 
 import React, { useEffect, useMemo, useState } from "react";
@@ -29,6 +27,8 @@ function Card({ children }: { children: React.ReactNode }) {
 export default function Admin() {
   const { refreshClaims } = useAuth();
 
+  const [usersErr, setUsersErr] = useState<string | null>(null);
+
   const [loadingUsers, setLoadingUsers] = useState(true);
   const [users, setUsers] = useState<AdminUserRow[]>([]);
   const [nextToken, setNextToken] = useState<string | null>(null);
@@ -48,14 +48,20 @@ export default function Admin() {
   const [setAdminBusy, setSetAdminBusy] = useState(false);
   const [setAdminMsg, setSetAdminMsg] = useState<string | null>(null);
 
-  const selected = useMemo(() => users.find((u) => u.uid === selectedUid) ?? null, [users, selectedUid]);
+  const selected = useMemo(
+    () => users.find((u) => u.uid === selectedUid) ?? null,
+    [users, selectedUid]
+  );
 
   async function loadUsers(initial = false) {
     setLoadingUsers(true);
+    setUsersErr(null);
     try {
       const res = await adminListUsers(25, initial ? null : nextToken);
       setUsers((prev) => (initial ? res.users : [...prev, ...res.users]));
       setNextToken(res.nextPageToken ?? null);
+    } catch (e: any) {
+      setUsersErr(String(e?.message ?? e));
     } finally {
       setLoadingUsers(false);
     }
@@ -99,15 +105,12 @@ export default function Admin() {
     try {
       await adminSetAdmin({ uid: selectedUid, admin: makeAdmin });
 
-      // Refresh the list to keep UI feeling up-to-date
-      // (Claims not shown in list yet, but we keep the UX responsive)
       setSetAdminMsg(
         makeAdmin
           ? "✅ Admin granted. The target user must refresh token (logout/login or refresh claims) to receive it."
           : "✅ Admin revoked. The target user must refresh token (logout/login or refresh claims) to lose it."
       );
 
-      // If the selected user is you, refresh claims now so the UI stays consistent
       try {
         await refreshClaims();
       } catch {
@@ -180,7 +183,9 @@ export default function Admin() {
                   <div className="text-xs text-white/70 whitespace-pre-wrap">❌ {whoMsg}</div>
                 ) : who ? (
                   <>
-                    <div className="text-xs text-white/70">uid: <span className="text-white/90">{who.uid}</span></div>
+                    <div className="text-xs text-white/70">
+                      uid: <span className="text-white/90">{who.uid}</span>
+                    </div>
                     <div className="mt-1 text-xs text-white/70">
                       claims.admin:{" "}
                       <span className={`font-semibold ${who.claims?.admin === true ? "text-emerald-300" : "text-rose-300"}`}>
@@ -205,11 +210,19 @@ export default function Admin() {
             <div className="p-5 border-b border-white/10">
               <div className="text-sm font-semibold">Users</div>
               <div className="mt-1 text-xs text-white/55">Click a user to inspect.</div>
+
+              {usersErr ? (
+                <div className="mt-3 rounded-xl border border-rose-500/25 bg-rose-500/10 px-3 py-2 text-xs text-rose-200 whitespace-pre-wrap">
+                  ❌ {usersErr}
+                </div>
+              ) : null}
             </div>
 
             <div className="max-h-[520px] overflow-auto">
               {loadingUsers && users.length === 0 ? (
                 <div className="p-5 text-sm text-white/70">Loading…</div>
+              ) : users.length === 0 ? (
+                <div className="p-5 text-sm text-white/70">No users found.</div>
               ) : (
                 <ul className="divide-y divide-white/10">
                   {users.map((u) => {
@@ -383,5 +396,5 @@ export default function Admin() {
 }
 
 // ==========================
-// End of Version 2 — src/pages/Admin.tsx
+// End of Version 3 — src/pages/Admin.tsx
 // ==========================

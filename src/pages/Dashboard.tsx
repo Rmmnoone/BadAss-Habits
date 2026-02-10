@@ -868,11 +868,11 @@ export default function Dashboard() {
   const pushButtonDisabled =
     !notifSupported || pushUi.status === "working" || notifStatus === "denied" || !uid;
 
-  const tokenYesNo = useMemo(() => {
-    if (tokenSnap.status === "working") return "…";
-    if (tokenSnap.status === "error" || tokenSnap.count === null) return "—";
-    return tokenSnap.count > 0 ? "Yes" : "No";
-  }, [tokenSnap]);
+ // const tokenYesNo = useMemo(() => {
+   // if (tokenSnap.status === "working") return "…";
+    //if (tokenSnap.status === "error" || tokenSnap.count === null) return "—";
+   // return tokenSnap.count > 0 ? "Yes" : "No";
+ // }, [tokenSnap]);
 
   const effectivePush = useMemo(() => {
     return buildPushStatus({
@@ -988,71 +988,224 @@ export default function Dashboard() {
           </div>
         </div>
 
+
+        {/* Top grid */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 sm:gap-5">
+          <div className="lg:col-span-2">
+            <DarkCard
+              title="Today"
+              subtitle={`Due habits for ${dateKey}`}
+            >
+              {/* Today summary (UI only) */}
+              {!loading && todayDueCount > 0 && (
+                <>
+                  <div className="mb-3 flex flex-wrap gap-2 text-[11px]">
+                    <span className="rounded-full border border-white/14 bg-white/[0.07] px-3 py-1 text-white/80">
+                      Due <span className="font-semibold">{todayDueCount}</span>
+                    </span>
+
+                    <span className="rounded-full border border-white/14 bg-white/[0.07] px-3 py-1 text-white/80">
+                      Done <span className="font-semibold">{todayDoneCount}</span>
+                    </span>
+
+                    <span className="rounded-full border border-white/14 bg-white/[0.07] px-3 py-1 text-white/80">
+                      Left <span className="font-semibold">{todayLeftCount}</span>
+                    </span>
+
+                    <span className="rounded-full border border-white/14 bg-white/[0.07] px-3 py-1 text-white/80">
+                      Rate <span className="font-semibold">{todayRatePct}%</span>
+                    </span>
+                  </div>
+
+                  {/* Progress bar */}
+                  <div className="mb-4">
+                    <div className="h-2 w-full overflow-hidden rounded-full border border-white/14 bg-black/20">
+                      <div
+                        className="h-full bg-white/35"
+                        style={{ width: `${todayRatePct}%` }}
+                      />
+                    </div>
+                    <div className="mt-1 text-[11px] text-white/45">
+                      {todayDoneCount} of {todayDueCount} done
+                    </div>
+                  </div>
+                </>
+              )}
+
+
+              {loading ? (
+                <div className="text-sm text-white/70">
+                  Loading…</div>
+              ) : dueItems.length === 0 ? (
+                <div className="rounded-xl border border-dashed border-white/16 bg-black/10 px-4 py-5">
+                  <p className="text-sm text-white/70">No habits due today.</p>
+                  <p className="mt-2 text-xs text-white/50">If you haven’t set schedules yet, go to Habits → Schedule.</p>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {dueItems.map((h: any) => {
+                    const isBusy = busyId === h.id;
+                    const streak = streakByHabitId[h.id] ?? 0;
+
+                    const remOn = Boolean(h.reminderEnabled) && isValidHHMM(h.reminderTime);
+                    const remTime = String(h.reminderTime ?? "");
+
+                    return (
+                      <div
+                        key={h.id}
+                        className="rounded-xl border border-white/14 bg-white/[0.07] p-4 backdrop-blur-2xl
+                                   shadow-[0_20px_60px_-50px_rgba(0,0,0,0.98)]
+                                   flex items-center justify-between gap-3"
+                      >
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-3 flex-wrap">
+                            <div className="text-sm font-semibold text-white truncate">{h.name}</div>
+
+                            {remOn ? <ReminderPill time={remTime} /> : <ReminderPill off />}
+
+                            <StreakPill n={streak} />
+                          </div>
+
+                          <div className="mt-1 flex items-center gap-2 text-xs">
+                            <span
+                              className={
+                              h.done
+                               ? "inline-flex items-center gap-1 rounded-full border border-emerald-300/25 bg-emerald-500/10 px-2 py-0.5 text-emerald-200"
+                                : "inline-flex items-center gap-1 rounded-full border border-white/14 bg-white/[0.06] px-2 py-0.5 text-white/65"
+                             }
+                            >
+                            {h.done ? "Done" : "Not done"}
+                            </span>
+                              {h.done ? <span className="text-white/45">✅</span> : null}
+                            </div>
+                          </div>
+
+                        <button
+                          disabled={isBusy}
+                          onClick={() => toggle(h.id, !h.done)}
+                          className={`rounded-xl border px-4 py-2 text-xs font-semibold transition
+                            ${
+                              h.done
+                                ? "border-white/18 bg-white/[0.07] text-white/80 hover:bg-white/[0.10]"
+                                : "border-white/22 bg-white/[0.12] text-white hover:bg-white/[0.16]"
+                            }
+                            disabled:opacity-50`}
+                        >
+                          {isBusy ? "Saving…" : h.done ? "Undo" : "Mark done"}
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              <div className="mt-4 text-xs text-white/45">
+                Tip: If push is ON, reminders can arrive in the background. If push is OFF/BLOCKED, you won’t get nudges.
+              </div>
+            </DarkCard>
+          </div>
+
+          <div className="lg:col-span-1">
+            <DarkCard title="Quick stats" subtitle="Snapshot (Today + last 7 days)">
+              <div className="grid grid-cols-2 gap-3">
+                {[
+                  { label: "Active habits", value: String(items.length) },
+                  { label: "Due today", value: String(dueItems.length) },
+                  { label: "Today done", value: String(dueItems.filter((x: any) => x.done).length) },
+                  { label: "Next reminder", value: nextReminderHM ?? "—" },
+                  { label: "7d consistency", value: insightsLoading ? "…" : consistency7d },
+                  {
+                    label: "Best streak",
+                    value: insightsLoading ? "…" : bestCurrentStreak == null ? "—" : String(bestCurrentStreak),
+                  },
+                  { label: "Today rate", value: stats.todayConsistency },
+                  { label: "Push", value: permissionLabel(notifStatus) },
+                ].map((x) => (
+                  <div
+                    key={x.label}
+                    className="rounded-xl border border-white/14 bg-white/[0.07] p-4 backdrop-blur-2xl
+                               shadow-[0_20px_60px_-50px_rgba(0,0,0,0.98)]"
+                  >
+                    <div className="text-xs text-white/60">{x.label}</div>
+                    <div className="mt-1 text-2xl font-semibold text-white">{x.value}</div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="mt-3 text-[11px] text-white/45">Note: streaks are computed from the last 60 days.</div>
+            </DarkCard>
+          </div>
+        </div>
+
+        {/* Lower grid (keep placeholders) */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-5 mt-4 sm:mt-5">
+          <DarkCard
+            title="Insights"
+            subtitle="Streaks, trends, and history will live here."
+            right={
+              <span className="inline-flex items-center rounded-full border border-white/14 bg-white/[0.07] px-3 py-1 text-xs text-white/75 backdrop-blur-2xl">
+                Analysis
+              </span>
+            }
+          >
+            <div className="rounded-xl border border-dashed border-white/16 bg-black/10 px-4 py-5">
+              <p className="text-sm text-white/70">Next we’ll add:</p>
+              <ul className="mt-3 space-y-2 text-sm text-white/70">
+                <li className="flex gap-3">
+                  <span className="text-white/50">•</span>
+                  <span>Longest streak (true, lifetime) + goals</span>
+                </li>
+                <li className="flex gap-3">
+                  <span className="text-white/50">•</span>
+                  <span>“Missed due days” + recovery suggestions</span>
+                </li>
+                <li className="flex gap-3">
+                  <span className="text-white/50">•</span>
+                  <span>Weekly trend + habit ranking</span>
+                </li>
+              </ul>
+            </div>
+          </DarkCard>
+
+          <DarkCard
+            title="Next up"
+            subtitle="Roadmap for the next build steps."
+          >
+            <div className="space-y-3">
+              {[
+                { title: "1) Habit CRUD", desc: "Create, edit, archive habits." },
+                { title: "2) Schedules per habit", desc: "Daily/weekly + reminders." },
+                { title: "3) Check-ins + streaks", desc: "Daily tracking + history + analysis." },
+              ].map((item) => (
+                <div
+                  key={item.title}
+                  className="rounded-xl border border-white/14 bg-white/[0.07] p-4 backdrop-blur-2xl
+                             shadow-[0_22px_70px_-55px_rgba(0,0,0,0.98)]"
+                >
+                  <div className="text-sm font-semibold text-white">{item.title}</div>
+                  <div className="mt-1 text-sm text-white/60">{item.desc}</div>
+                </div>
+              ))}
+            </div>
+          </DarkCard>
+        </div>
+
+        <div className="mt-10 text-center text-xs text-white/90">
+          Tip: Install the app on your phone for the best reminder experience.
+        </div>
+
+        <div className="mt-10 text-center text-xs text-white/90">
+          
+        </div>
+
         {/* TOP: Notifications */}
         <DarkCard
           title="Notifications"
-          subtitle="Push status, timezone override, and quiet hours."
-          right={
-            <span className="inline-flex items-center rounded-full border border-white/14 bg-white/[0.07] px-3 py-1 text-xs text-white/75 backdrop-blur-2xl">
-              MVP
-            </span>
-          }
+
         >
           {/* Status pills */}
           <div className="flex items-center gap-2 flex-wrap">
-            <span className="inline-flex items-center gap-2 rounded-full border border-white/14 bg-white/[0.07] px-2.5 py-1 text-[11px] text-white/80 backdrop-blur-2xl">
-              Global reminders:
-              <span className={globalEnabled ? "text-emerald-300/90 font-semibold" : "text-rose-300/90 font-semibold"}>
-                {globalEnabled ? "ON" : "OFF"}
-              </span>
-            </span>
 
-            <span className="inline-flex items-center gap-2 rounded-full border border-white/14 bg-white/[0.07] px-2.5 py-1 text-[11px] text-white/80 backdrop-blur-2xl">
-              Push permission:
-              <span
-                className={
-                  notifStatus === "granted"
-                    ? "text-emerald-300/90 font-semibold"
-                    : notifStatus === "denied"
-                    ? "text-rose-300/90 font-semibold"
-                    : "text-white/70 font-semibold"
-                }
-              >
-                {permissionLabel(notifStatus)}
-              </span>
-            </span>
-
-            <span className="inline-flex items-center gap-2 rounded-full border border-white/14 bg-white/[0.07] px-2.5 py-1 text-[11px] text-white/80 backdrop-blur-2xl">
-              Token: <span className="text-white/80 font-semibold">{tokenYesNo}</span>
-            </span>
-
-            <span className="inline-flex items-center gap-2 rounded-full border border-white/14 bg-white/[0.07] px-2.5 py-1 text-[11px] text-white/80 backdrop-blur-2xl">
-              SW:
-              <span className="text-white/80 font-semibold">
-                {typeof window === "undefined" ? "—" : navigator.serviceWorker?.controller ? "Active" : "Not active"}
-              </span>
-            </span>
-
-            <span className="inline-flex items-center gap-2 rounded-full border border-white/14 bg-white/[0.07] px-2.5 py-1 text-[11px] text-white/80 backdrop-blur-2xl">
-              Timezone: <span className="text-white/80 font-semibold">{userTz}</span>
-              {userTz === deviceTz ? (
-                <span className="text-white/55 font-semibold">• device</span>
-              ) : (
-                <span className="text-amber-200 font-semibold">• override</span>
-              )}
-            </span>
-
-            <span className="inline-flex items-center gap-2 rounded-full border border-white/14 bg-white/[0.07] px-2.5 py-1 text-[11px] text-white/80 backdrop-blur-2xl">
-              Quiet hours:
-              <span className={quietEnabled ? "text-emerald-300/90 font-semibold" : "text-white/70 font-semibold"}>
-                {quietEnabled ? "ON" : "OFF"}
-              </span>
-              {quietEnabled ? (
-                <span className={quietActiveNow ? "text-amber-200 font-semibold" : "text-white/60 font-semibold"}>
-                  • {quietStart}–{quietEnd} {quietActiveNow ? "(active now)" : ""}
-                </span>
-              ) : null}
-            </span>
           </div>
 
           {/* Primary action buttons */}
@@ -1447,221 +1600,6 @@ export default function Dashboard() {
           <div className="mt-5" />
         )}
 
-        {/* Top grid */}
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 sm:gap-5">
-          <div className="lg:col-span-2">
-            <DarkCard
-              title="Today"
-              subtitle={`Due habits for ${dateKey}`}
-              right={
-                <span className="inline-flex items-center rounded-full border border-white/14 bg-white/[0.07] px-3 py-1 text-xs text-white/75 backdrop-blur-2xl">
-                  MVP
-                </span>
-              }
-            >
-              {/* Today summary (UI only) */}
-              {!loading && todayDueCount > 0 && (
-                <>
-                  <div className="mb-3 flex flex-wrap gap-2 text-[11px]">
-                    <span className="rounded-full border border-white/14 bg-white/[0.07] px-3 py-1 text-white/80">
-                      Due <span className="font-semibold">{todayDueCount}</span>
-                    </span>
-
-                    <span className="rounded-full border border-white/14 bg-white/[0.07] px-3 py-1 text-white/80">
-                      Done <span className="font-semibold">{todayDoneCount}</span>
-                    </span>
-
-                    <span className="rounded-full border border-white/14 bg-white/[0.07] px-3 py-1 text-white/80">
-                      Left <span className="font-semibold">{todayLeftCount}</span>
-                    </span>
-
-                    <span className="rounded-full border border-white/14 bg-white/[0.07] px-3 py-1 text-white/80">
-                      Rate <span className="font-semibold">{todayRatePct}%</span>
-                    </span>
-                  </div>
-
-                  {/* Progress bar */}
-                  <div className="mb-4">
-                    <div className="h-2 w-full overflow-hidden rounded-full border border-white/14 bg-black/20">
-                      <div
-                        className="h-full bg-white/35"
-                        style={{ width: `${todayRatePct}%` }}
-                      />
-                    </div>
-                    <div className="mt-1 text-[11px] text-white/45">
-                      {todayDoneCount} of {todayDueCount} done
-                    </div>
-                  </div>
-                </>
-              )}
-
-
-              {loading ? (
-                <div className="text-sm text-white/70">
-                  Loading…</div>
-              ) : dueItems.length === 0 ? (
-                <div className="rounded-xl border border-dashed border-white/16 bg-black/10 px-4 py-5">
-                  <p className="text-sm text-white/70">No habits due today.</p>
-                  <p className="mt-2 text-xs text-white/50">If you haven’t set schedules yet, go to Habits → Schedule.</p>
-                </div>
-              ) : (
-                <div className="space-y-2">
-                  {dueItems.map((h: any) => {
-                    const isBusy = busyId === h.id;
-                    const streak = streakByHabitId[h.id] ?? 0;
-
-                    const remOn = Boolean(h.reminderEnabled) && isValidHHMM(h.reminderTime);
-                    const remTime = String(h.reminderTime ?? "");
-
-                    return (
-                      <div
-                        key={h.id}
-                        className="rounded-xl border border-white/14 bg-white/[0.07] p-4 backdrop-blur-2xl
-                                   shadow-[0_20px_60px_-50px_rgba(0,0,0,0.98)]
-                                   flex items-center justify-between gap-3"
-                      >
-                        <div className="min-w-0">
-                          <div className="flex items-center gap-3 flex-wrap">
-                            <div className="text-sm font-semibold text-white truncate">{h.name}</div>
-
-                            {remOn ? <ReminderPill time={remTime} /> : <ReminderPill off />}
-
-                            <StreakPill n={streak} />
-                          </div>
-
-                          <div className="mt-1 flex items-center gap-2 text-xs">
-  <span
-    className={
-      h.done
-        ? "inline-flex items-center gap-1 rounded-full border border-emerald-300/25 bg-emerald-500/10 px-2 py-0.5 text-emerald-200"
-        : "inline-flex items-center gap-1 rounded-full border border-white/14 bg-white/[0.06] px-2 py-0.5 text-white/65"
-    }
-  >
-    {h.done ? "Done" : "Not done"}
-  </span>
-  {h.done ? <span className="text-white/45">✅</span> : null}
-</div>
-
-                        </div>
-
-                        <button
-                          disabled={isBusy}
-                          onClick={() => toggle(h.id, !h.done)}
-                          className={`rounded-xl border px-4 py-2 text-xs font-semibold transition
-                            ${
-                              h.done
-                                ? "border-white/18 bg-white/[0.07] text-white/80 hover:bg-white/[0.10]"
-                                : "border-white/22 bg-white/[0.12] text-white hover:bg-white/[0.16]"
-                            }
-                            disabled:opacity-50`}
-                        >
-                          {isBusy ? "Saving…" : h.done ? "Undo" : "Mark done"}
-                        </button>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-
-              <div className="mt-4 text-xs text-white/45">
-                Tip: If push is ON, reminders can arrive in the background. If push is OFF/BLOCKED, you won’t get nudges.
-              </div>
-            </DarkCard>
-          </div>
-
-          <div className="lg:col-span-1">
-            <DarkCard title="Quick stats" subtitle="Snapshot (Today + last 7 days)">
-              <div className="grid grid-cols-2 gap-3">
-                {[
-                  { label: "Active habits", value: String(items.length) },
-                  { label: "Due today", value: String(dueItems.length) },
-                  { label: "Today done", value: String(dueItems.filter((x: any) => x.done).length) },
-                  { label: "Next reminder", value: nextReminderHM ?? "—" },
-                  { label: "7d consistency", value: insightsLoading ? "…" : consistency7d },
-                  {
-                    label: "Best streak",
-                    value: insightsLoading ? "…" : bestCurrentStreak == null ? "—" : String(bestCurrentStreak),
-                  },
-                  { label: "Today rate", value: stats.todayConsistency },
-                  { label: "Push", value: permissionLabel(notifStatus) },
-                ].map((x) => (
-                  <div
-                    key={x.label}
-                    className="rounded-xl border border-white/14 bg-white/[0.07] p-4 backdrop-blur-2xl
-                               shadow-[0_20px_60px_-50px_rgba(0,0,0,0.98)]"
-                  >
-                    <div className="text-xs text-white/60">{x.label}</div>
-                    <div className="mt-1 text-2xl font-semibold text-white">{x.value}</div>
-                  </div>
-                ))}
-              </div>
-
-              <div className="mt-3 text-[11px] text-white/45">Note: streaks are computed from the last 60 days (MVP).</div>
-            </DarkCard>
-          </div>
-        </div>
-
-        {/* Lower grid (keep placeholders) */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-5 mt-4 sm:mt-5">
-          <DarkCard
-            title="Insights"
-            subtitle="Streaks, trends, and history will live here."
-            right={
-              <span className="inline-flex items-center rounded-full border border-white/14 bg-white/[0.07] px-3 py-1 text-xs text-white/75 backdrop-blur-2xl">
-                Analysis
-              </span>
-            }
-          >
-            <div className="rounded-xl border border-dashed border-white/16 bg-black/10 px-4 py-5">
-              <p className="text-sm text-white/70">Next we’ll add:</p>
-              <ul className="mt-3 space-y-2 text-sm text-white/70">
-                <li className="flex gap-3">
-                  <span className="text-white/50">•</span>
-                  <span>Longest streak (true, lifetime) + goals</span>
-                </li>
-                <li className="flex gap-3">
-                  <span className="text-white/50">•</span>
-                  <span>“Missed due days” + recovery suggestions</span>
-                </li>
-                <li className="flex gap-3">
-                  <span className="text-white/50">•</span>
-                  <span>Weekly trend + habit ranking</span>
-                </li>
-              </ul>
-            </div>
-          </DarkCard>
-
-          <DarkCard
-            title="Next up"
-            subtitle="Roadmap for the next build steps."
-            right={
-              <span className="inline-flex items-center rounded-full border border-white/14 bg-white/[0.07] px-3 py-1 text-xs text-white/75 backdrop-blur-2xl">
-                MVP
-              </span>
-            }
-          >
-            <div className="space-y-3">
-              {[
-                { title: "1) Habit CRUD", desc: "Create, edit, archive habits." },
-                { title: "2) Schedules per habit", desc: "Daily/weekly + reminders." },
-                { title: "3) Check-ins + streaks", desc: "Daily tracking + history + analysis." },
-              ].map((item) => (
-                <div
-                  key={item.title}
-                  className="rounded-xl border border-white/14 bg-white/[0.07] p-4 backdrop-blur-2xl
-                             shadow-[0_22px_70px_-55px_rgba(0,0,0,0.98)]"
-                >
-                  <div className="text-sm font-semibold text-white">{item.title}</div>
-                  <div className="mt-1 text-sm text-white/60">{item.desc}</div>
-                </div>
-              ))}
-            </div>
-          </DarkCard>
-        </div>
-
-        <div className="mt-6 text-center text-xs text-white/45">
-          Tip: Install the app on your phone for the best reminder experience.
-        </div>
       </div>
     </Scene>
   );

@@ -389,6 +389,9 @@ function ScheduleModal({
 }
 
 export default function Habits() {
+
+
+
   const { user, logout } = useAuth();
   const nav = useNavigate();
 
@@ -403,6 +406,27 @@ export default function Habits() {
   const [scheduleHabitName, setScheduleHabitName] = useState<string>("");
   const [savingSchedule, setSavingSchedule] = useState(false);
 
+//--------------------------------------------------------//
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const menuRef = React.useRef<HTMLDivElement | null>(null);
+
+  React.useEffect(() => {
+    function onDocClick(e: MouseEvent) {
+      if (!mobileMenuOpen) return;
+      const el = menuRef.current;
+      if (!el) return;
+      if (e.target instanceof Node && !el.contains(e.target)) {
+        setMobileMenuOpen(false);
+      }
+    }
+
+    // capture phase helps when clicks are stopped inside other elements
+    document.addEventListener("mousedown", onDocClick, true);
+    return () => document.removeEventListener("mousedown", onDocClick, true);
+  }, [mobileMenuOpen]);
+
+//--------------------------------------------------------//
+  
   const canCreate = useMemo(() => name.trim().length >= 2 && !saving, [name, saving]);
 
   const { schedule, loading: scheduleLoading } = useHabitSchedule(uid, scheduleHabitId);
@@ -497,46 +521,96 @@ export default function Habits() {
               <div className="text-sm font-semibold text-white">Habits</div>
               <div className="text-xs text-white/60">Manage your habits (create, rename, schedule, archive).</div>
 
-              <div className="mt-1 text-[11px] text-white/40">
-                debug: uid={uid ? uid.slice(0, 6) + "…" : "null"} • loading={String(loading)} • active={active.length}
-              </div>
+              
             </div>
           </div>
 
           <div className="flex items-center gap-2">
-            <Link
-              to="/"
-              className="rounded-xl border border-white/14
-                         bg-gradient-to-b from-white/[0.12] to-white/[0.05]
-                         backdrop-blur-2xl px-4 py-2 text-sm font-semibold text-white/90
-                         hover:from-white/[0.16] hover:to-white/[0.07] transition
-                         shadow-[0_28px_80px_-60px_rgba(0,0,0,0.98)]"
-            >
-              Dashboard
-            </Link>
+  {/* Desktop nav */}
+  <div className="hidden sm:flex items-center gap-2">
+    <Link
+      to="/"
+      className="rounded-xl border border-white/14
+                 bg-gradient-to-b from-white/[0.12] to-white/[0.05]
+                 backdrop-blur-2xl px-4 py-2 text-sm font-semibold text-white/90
+                 hover:from-white/[0.16] hover:to-white/[0.07] transition
+                 shadow-[0_28px_80px_-60px_rgba(0,0,0,0.98)]"
+    >
+      Dashboard
+    </Link>
 
-            <Link
-              to="/history"
-              className="rounded-xl border border-white/14
-               bg-gradient-to-b from-white/[0.12] to-white/[0.05]
-               backdrop-blur-2xl px-4 py-2 text-sm font-semibold text-white/90
-               hover:from-white/[0.16] hover:to-white/[0.07] transition
-               shadow-[0_28px_80px_-60px_rgba(0,0,0,0.98)]"
-            >
-              History
-            </Link>
+    <Link
+      to="/history"
+      className="rounded-xl border border-white/14
+                 bg-gradient-to-b from-white/[0.12] to-white/[0.05]
+                 backdrop-blur-2xl px-4 py-2 text-sm font-semibold text-white/90
+                 hover:from-white/[0.16] hover:to-white/[0.07] transition
+                 shadow-[0_28px_80px_-60px_rgba(0,0,0,0.98)]"
+    >
+      History
+    </Link>
 
-            <button
-              onClick={onLogout}
-              className="rounded-xl border border-white/14
-                         bg-gradient-to-b from-white/[0.12] to-white/[0.05]
-                         backdrop-blur-2xl px-4 py-2 text-sm font-semibold text-white/90
-                         hover:from-white/[0.16] hover:to-white/[0.07] transition
-                         shadow-[0_28px_80px_-60px_rgba(0,0,0,0.98)]"
-            >
-              Logout
-            </button>
-          </div>
+    <button
+      onClick={onLogout}
+      className="rounded-xl border border-white/14
+                 bg-gradient-to-b from-white/[0.12] to-white/[0.05]
+                 backdrop-blur-2xl px-4 py-2 text-sm font-semibold text-white/90
+                 hover:from-white/[0.16] hover:to-white/[0.07] transition
+                 shadow-[0_28px_80px_-60px_rgba(0,0,0,0.98)]"
+    >
+      Logout
+    </button>
+  </div>
+
+  {/* Mobile hamburger */}
+  <div ref={menuRef} className="sm:hidden relative">
+    <button
+      onClick={() => setMobileMenuOpen((v) => !v)}
+      className="h-10 w-10 rounded-xl border border-white/14 bg-white/[0.10]
+                 flex items-center justify-center text-white text-lg"
+      aria-label="Open menu"
+    >
+      ☰
+    </button>
+
+    {mobileMenuOpen && (
+      <div
+        className="absolute right-0 mt-2 w-44 rounded-xl border border-white/14
+                   bg-[#0b0c24]/90 backdrop-blur-xl shadow-xl z-50 overflow-hidden"
+      >
+        <Link
+          to="/"
+          onClick={() => setMobileMenuOpen(false)}
+          className="block px-4 py-3 text-sm text-white/90 hover:bg-white/[0.08]"
+        >
+          Dashboard
+        </Link>
+
+        <Link
+          to="/history"
+          onClick={() => setMobileMenuOpen(false)}
+          className="block px-4 py-3 text-sm text-white/90 hover:bg-white/[0.08]"
+        >
+          History
+        </Link>
+
+        <button
+          onClick={() => {
+            setMobileMenuOpen(false);
+            onLogout();
+          }}
+          className="w-full text-left px-4 py-3 text-sm text-white/90 hover:bg-white/[0.08]"
+        >
+          Logout
+        </button>
+      </div>
+    )}
+  </div>
+</div>
+
+
+
+
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-5">
@@ -602,54 +676,70 @@ export default function Habits() {
                         className="rounded-xl border border-white/14 bg-white/[0.07] p-4 backdrop-blur-2xl
                                    shadow-[0_22px_70px_-55px_rgba(0,0,0,0.98)]"
                       >
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="min-w-0">
-                            <Link
-                              to={`/habits/${h.id}`}
-                              className="text-sm font-semibold text-white truncate hover:underline underline-offset-4"
-                              title="Open habit details"
-                            >
-                              {h.name}
-                            </Link>
+                        
 
-                            <div className="mt-1 flex flex-wrap items-center gap-2">
-                              <span className="text-xs text-white/60">Active</span>
-                              {duePill(dueToday)}
-                              {reminderPill(h?.reminders)}
-                            </div>
+                        <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
+  <div className="min-w-0">
+    <Link
+      to={`/habits/${h.id}`}
+      className="text-sm font-semibold text-white truncate hover:underline underline-offset-4 block"
+      title="Open habit details"
+    >
+      {h.name}
+    </Link>
 
-                            <div className="mt-2 text-xs text-white/45">
-                              Schedule: <span className="text-white/70">{sched}</span>
-                            </div>
-                          </div>
+    <div className="mt-2 flex flex-wrap items-center gap-2">
+      <span className="text-xs text-white/60">Active</span>
+      {duePill(dueToday)}
+      {reminderPill(h?.reminders)}
+    </div>
 
-                          <div className="flex items-center gap-2 shrink-0">
-                            <Link
-                              to={`/habits/${h.id}`}
-                              className="rounded-lg border border-white/14 bg-white/[0.10] px-3 py-2 text-xs font-semibold text-white/90 hover:bg-white/[0.14]"
-                            >
-                              View
-                            </Link>
-                            <button
-                              onClick={() => openSchedule(h.id, h.name)}
-                              className="rounded-lg border border-white/14 bg-white/[0.08] px-3 py-2 text-xs font-semibold text-white/85 hover:bg-white/[0.12]"
-                            >
-                              Schedule
-                            </button>
-                            <button
-                              onClick={() => onRename(h.id, h.name)}
-                              className="rounded-lg border border-white/14 bg-white/[0.08] px-3 py-2 text-xs font-semibold text-white/85 hover:bg-white/[0.12]"
-                            >
-                              Rename
-                            </button>
-                            <button
-                              onClick={() => onArchive(h.id)}
-                              className="rounded-lg border border-white/14 bg-white/[0.08] px-3 py-2 text-xs font-semibold text-white/85 hover:bg-white/[0.12]"
-                            >
-                              Archive
-                            </button>
-                          </div>
-                        </div>
+    <div className="mt-2 text-xs text-white/45">
+      Schedule: <span className="text-white/70">{sched}</span>
+    </div>
+  </div>
+
+  <div className="flex flex-wrap gap-2 sm:justify-end sm:shrink-0">
+    <Link
+      to={`/habits/${h.id}`}
+      className="rounded-lg border border-white/14 bg-white/[0.10]
+                 px-3 py-2 text-[11px] font-semibold text-white/90 hover:bg-white/[0.14]
+                 whitespace-nowrap"
+    >
+      View
+    </Link>
+
+    <button
+      onClick={() => openSchedule(h.id, h.name)}
+      className="rounded-lg border border-white/14 bg-white/[0.08]
+                 px-3 py-2 text-[11px] font-semibold text-white/85 hover:bg-white/[0.12]
+                 whitespace-nowrap"
+    >
+      Schedule
+    </button>
+
+    <button
+      onClick={() => onRename(h.id, h.name)}
+      className="rounded-lg border border-white/14 bg-white/[0.08]
+                 px-3 py-2 text-[11px] font-semibold text-white/85 hover:bg-white/[0.12]
+                 whitespace-nowrap"
+    >
+      Rename
+    </button>
+
+    <button
+      onClick={() => onArchive(h.id)}
+      className="rounded-lg border border-white/14 bg-white/[0.08]
+                 px-3 py-2 text-[11px] font-semibold text-white/85 hover:bg-white/[0.12]
+                 whitespace-nowrap"
+    >
+      Archive
+    </button>
+  </div>
+</div>
+
+
+
                       </div>
                     );
                   })

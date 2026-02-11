@@ -1,11 +1,13 @@
 // ==========================
-// Version 10 — src/pages/History.tsx
-// - v9 fixes:
-//   * "View all" modal is now CARD-CONTAINED (not full-screen), so it fits inside Daily breakdown card
-//   * Removes Reminder Logs completely (UI + Firestore listener + types + imports)
-// - Keeps heatmap + analytics logic unchanged
+// Version 11 — src/pages/History.tsx
+// - v10 + Month navigation for Heatmap (Prev / Today / Next)
+// - Heatmap now renders the SELECTED month (not the 7/30/90 window)
+//   * Loads month keys via getDoneMapForRange(db, uid, monthKeys)
+//   * Future months show scheduled "due" days (done will be 0)
+// - Keeps window-based analytics (Overall / Per-habit streaks / Daily breakdown) unchanged
+// - Keeps mobile hamburger as-is
 // ==========================
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import Scene from "../components/Scene";
 import { useAuth } from "../auth/AuthProvider";
@@ -14,6 +16,8 @@ import { useHistory } from "../hooks/useHistory";
 import { computeHabitWindowStats, computeOverallWindowStats } from "../utils/history";
 import { dateKeyFromDate, weekday1to7 } from "../utils/dateKey";
 import { isDueOnDateKey } from "../utils/eligibility";
+import { db } from "../firebase/client";
+import { getDoneMapForRange } from "../firebase/checkins";
 
 function initials(email?: string | null) {
   if (!email) return "U";
@@ -117,6 +121,12 @@ function startOfMonth(d: Date) {
 }
 function daysInMonth(d: Date) {
   return new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
+}
+
+function addMonths(d: Date, delta: number) {
+  const x = new Date(d);
+  x.setMonth(x.getMonth() + delta);
+  return x;
 }
 
 /** Month calendar slots: 6 rows x 7 cols */
@@ -256,7 +266,9 @@ function MonthCalendar({ monthDate, cellsByKey }: { monthDate: Date; cellsByKey:
             <div key={s.key} className="flex items-center justify-center">
               <div className="relative">
                 <HeatDot cell={cell} outOfMonth={outOfMonth} />
-                <div className={`pointer-events-none absolute inset-0 flex items-center justify-center text-sm font-semibold ${dayText}`}>
+                <div
+                  className={`pointer-events-none absolute inset-0 flex items-center justify-center text-sm font-semibold ${dayText}`}
+                >
                   {s.date.getDate()}
                 </div>
               </div>
@@ -273,6 +285,7 @@ export default function History() {
   const uid = user?.uid ?? null;
   const nav = useNavigate();
 
+  // Window-based stats (unchanged for now)
   const [rangeDays, setRangeDays] = useState<7 | 30 | 90>(30);
 
   const [heatMode, setHeatMode] = useState<HeatMode>("overall");
@@ -281,21 +294,81 @@ export default function History() {
   // Daily breakdown modal (card-contained)
   const [dailyOpen, setDailyOpen] = useState(false);
 
+  //--------------------------------------------------------------------//
+
+  // Mobile menu
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    function onDown(e: MouseEvent) {
+      if (!mobileMenuOpen) return;
+      const el = menuRef.current;
+      const target = e.target as Node | null;
+      if (!el || !target) return;
+      if (!el.contains(target)) setMobileMenuOpen(false);
+    }
+
+    // capture-phase is more reliable for "outside click"
+    document.addEventListener("mousedown", onDown, true);
+    return () => document.removeEventListener("mousedown", onDown, true);
+  }, [mobileMenuOpen]);
+
+  //--------------------------------------------------------------------//
+
+  // Month navigation for heatmap
+  const [monthOffset, setMonthOffset] = useState(0);
+  const [monthDoneMap, setMonthDoneMap] = useState<Map<string, Set<string>>>(new Map());
+  const [monthLoading, setMonthLoading] = useState(false);
+
   // Clamp history to "account creation day" so we don't show pre-registration days.
   const minDateKey = useMemo(() => userCreationDateKey(user), [user]);
 
   const { active: activeHabits, loading: habitsLoading } = useHabits(uid);
 
+  // Window-based history for stats cards (unchanged)
   const { dateKeysDesc, doneMap, loading: historyLoading } = useHistory(uid, rangeDays, minDateKey);
 
   // Ensure selectedHabitId always points to a real active habit when in habit mode
-  React.useEffect(() => {
+  useEffect(() => {
     if (heatMode !== "habit") return;
     if (!activeHabits?.length) return;
 
     const exists = (activeHabits as any[]).some((h) => h.id === selectedHabitId);
     if (!exists) setSelectedHabitId((activeHabits as any[])[0]?.id ?? "");
   }, [heatMode, activeHabits, selectedHabitId]);
+
+  // Month shown in heatmap
+  const monthDate = useMemo(() => startOfMonth(addMonths(new Date(), monthOffset)), [monthOffset]);
+  const monthSlots = useMemo(() => buildMonthSlots(monthDate), [monthDate]);
+  const monthKeys = useMemo(() => monthSlots.map((s) => s.key), [monthSlots]);
+
+  // Load check-ins for the month keys (for heatmap)
+  useEffect(() => {
+    let cancelled = false;
+
+    async function run() {
+      if (!uid) {
+        setMonthDoneMap(new Map());
+        return;
+      }
+
+      setMonthLoading(true);
+      try {
+        const map = await getDoneMapForRange(db, uid, monthKeys);
+        if (!cancelled) setMonthDoneMap(map);
+      } catch {
+        if (!cancelled) setMonthDoneMap(new Map());
+      } finally {
+        if (!cancelled) setMonthLoading(false);
+      }
+    }
+
+    run();
+    return () => {
+      cancelled = true;
+    };
+  }, [uid, monthKeys]);
 
   const overall = useMemo(() => {
     if (!activeHabits?.length) return { dueCount: 0, doneCount: 0, completionRate: null as number | null };
@@ -349,18 +422,19 @@ export default function History() {
 
   const loading = habitsLoading || historyLoading;
 
-  const heatCellsDesc: Cell[] = useMemo(() => {
-    if (!dateKeysDesc.length) return [];
+  // Heatmap cells for the SELECTED month
+  const heatCellsForMonth: Cell[] = useMemo(() => {
+    if (!monthKeys.length) return [];
 
     const habits = (activeHabits as any[]) ?? [];
 
-    function isDoneDayHabit(dateKey: string, habitId: string) {
-      const set = doneMap.get(dateKey);
+    function isDoneDayHabitMonth(dateKey: string, habitId: string) {
+      const set = monthDoneMap.get(dateKey);
       return Boolean(set && set.has(habitId));
     }
 
     if (heatMode === "overall") {
-      return dateKeysDesc.map((k) => {
+      return monthKeys.map((k) => {
         const d = new Date(k + "T12:00:00");
         const weekday = weekday1to7(d);
 
@@ -371,7 +445,7 @@ export default function History() {
           const isDue = isDueOnDateKey({ habit: h, dateKey: k, minDateKey });
           if (!isDue) continue;
           due++;
-          if (isDoneDayHabit(k, h.id)) done++;
+          if (isDoneDayHabitMonth(k, h.id)) done++;
         }
 
         const disabled = due === 0;
@@ -386,7 +460,7 @@ export default function History() {
 
     const habit = habits.find((h) => h.id === selectedHabitId);
 
-    return dateKeysDesc.map((k) => {
+    return monthKeys.map((k) => {
       const d = new Date(k + "T12:00:00");
       const weekday = weekday1to7(d);
 
@@ -395,7 +469,7 @@ export default function History() {
       }
 
       const due = isDueOnDateKey({ habit, dateKey: k, minDateKey }) ? 1 : 0;
-      const done = due === 1 && isDoneDayHabit(k, habit.id) ? 1 : 0;
+      const done = due === 1 && isDoneDayHabitMonth(k, habit.id) ? 1 : 0;
       const disabled = due === 0;
 
       // Habit mode: only “done” glows
@@ -405,21 +479,13 @@ export default function History() {
 
       return { key: k, weekday, due, done, disabled, intensity: disabled ? 0 : intensity, label };
     });
-  }, [dateKeysDesc, activeHabits, doneMap, heatMode, selectedHabitId, minDateKey]);
+  }, [monthKeys, activeHabits, monthDoneMap, heatMode, selectedHabitId, minDateKey]);
 
   const heatCellsByKey = useMemo(() => {
     const map = new Map<string, Cell>();
-    for (const c of heatCellsDesc) map.set(c.key, c);
+    for (const c of heatCellsForMonth) map.set(c.key, c);
     return map;
-  }, [heatCellsDesc]);
-
-  // Single month shown = month containing the most recent key in the window (usually today)
-  const monthDate = useMemo(() => {
-    const topKey = dateKeysDesc?.[0];
-    if (!topKey) return startOfMonth(new Date());
-    const d = new Date(topKey + "T12:00:00");
-    return startOfMonth(d);
-  }, [dateKeysDesc]);
+  }, [heatCellsForMonth]);
 
   const dailyPreview = useMemo(() => perDayRows.slice(0, 7), [perDayRows]);
 
@@ -457,61 +523,90 @@ export default function History() {
           </div>
 
           <div className="flex items-center gap-2">
-            <Link
-              to="/"
-              className="rounded-xl border border-white/14
-                         bg-gradient-to-b from-white/[0.12] to-white/[0.05]
-                         backdrop-blur-2xl px-4 py-2 text-sm font-semibold text-white/90
-                         hover:from-white/[0.16] hover:to-white/[0.07] transition
-                         shadow-[0_28px_80px_-60px_rgba(0,0,0,0.98)]"
-            >
-              Dashboard
-            </Link>
+            {/* Desktop nav (keeps your current buttons) */}
+            <div className="hidden sm:flex items-center gap-2">
+              <Link
+                to="/"
+                className="rounded-xl border border-white/14
+                           bg-gradient-to-b from-white/[0.12] to-white/[0.05]
+                           backdrop-blur-2xl px-4 py-2 text-sm font-semibold text-white/90
+                           hover:from-white/[0.16] hover:to-white/[0.07] transition
+                           shadow-[0_28px_80px_-60px_rgba(0,0,0,0.98)]"
+              >
+                Dashboard
+              </Link>
 
-            <Link
-              to="/habits"
-              className="rounded-xl border border-white/14
-                         bg-gradient-to-b from-white/[0.12] to-white/[0.05]
-                         backdrop-blur-2xl px-4 py-2 text-sm font-semibold text-white/90
-                         hover:from-white/[0.16] hover:to-white/[0.07] transition
-                         shadow-[0_28px_80px_-60px_rgba(0,0,0,0.98)]"
-            >
-              Habits
-            </Link>
+              <Link
+                to="/habits"
+                className="rounded-xl border border-white/14
+                           bg-gradient-to-b from-white/[0.12] to-white/[0.05]
+                           backdrop-blur-2xl px-4 py-2 text-sm font-semibold text-white/90
+                           hover:from-white/[0.16] hover:to-white/[0.07] transition
+                           shadow-[0_28px_80px_-60px_rgba(0,0,0,0.98)]"
+              >
+                Habits
+              </Link>
 
-            <button
-              onClick={logout}
-              className="rounded-xl border border-white/14
-                         bg-gradient-to-b from-white/[0.12] to-white/[0.05]
-                         backdrop-blur-2xl px-4 py-2 text-sm font-semibold text-white/90
-                         hover:from-white/[0.16] hover:to-white/[0.07] transition
-                         shadow-[0_28px_80px_-60px_rgba(0,0,0,0.98)]"
-            >
-              Logout
-            </button>
+              <button
+                onClick={logout}
+                className="rounded-xl border border-white/14
+                           bg-gradient-to-b from-white/[0.12] to-white/[0.05]
+                           backdrop-blur-2xl px-4 py-2 text-sm font-semibold text-white/90
+                           hover:from-white/[0.16] hover:to-white/[0.07] transition
+                           shadow-[0_28px_80px_-60px_rgba(0,0,0,0.98)]"
+              >
+                Logout
+              </button>
+            </div>
+
+            {/* Mobile hamburger */}
+            <div ref={menuRef} className="sm:hidden relative">
+              <button
+                onClick={() => setMobileMenuOpen((v) => !v)}
+                className="h-10 w-10 rounded-xl border border-white/14 bg-white/[0.10]
+                           flex items-center justify-center text-white text-lg"
+                aria-label="Open menu"
+              >
+                ☰
+              </button>
+
+              {mobileMenuOpen && (
+                <div
+                  className="absolute right-0 mt-2 w-44 rounded-xl border border-white/14
+                             bg-[#0b0c24]/90 backdrop-blur-xl shadow-xl z-50 overflow-hidden"
+                >
+                  <Link
+                    to="/"
+                    onClick={() => setMobileMenuOpen(false)}
+                    className="block px-4 py-3 text-sm text-white/90 hover:bg-white/[0.08]"
+                  >
+                    Dashboard
+                  </Link>
+
+                  <Link
+                    to="/habits"
+                    onClick={() => setMobileMenuOpen(false)}
+                    className="block px-4 py-3 text-sm text-white/90 hover:bg-white/[0.08]"
+                  >
+                    Habits
+                  </Link>
+
+                  <button
+                    onClick={() => {
+                      setMobileMenuOpen(false);
+                      logout();
+                    }}
+                    className="w-full text-left px-4 py-3 text-sm text-white/90 hover:bg-white/[0.08]"
+                  >
+                    Logout
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         </div>
 
-        {/* Range selector */}
-        <div className="mb-4 flex items-center gap-2 flex-wrap">
-          {[7, 30, 90].map((n) => {
-            const active = rangeDays === n;
-            return (
-              <button
-                key={n}
-                onClick={() => setRangeDays(n as any)}
-                className={`rounded-xl border px-4 py-2 text-sm font-semibold backdrop-blur-2xl transition
-                  ${
-                    active
-                      ? "border-white/30 bg-gradient-to-b from-white/[0.22] to-white/[0.10] text-white ring-2 ring-white/25 shadow-[0_18px_55px_-35px_rgba(255,255,255,0.35)]"
-                      : "border-white/14 bg-white/[0.05] text-white/70 hover:bg-white/[0.10] hover:text-white/85"
-                  }`}
-              >
-                {active ? `✓ Last ${n} days` : `Last ${n} days`}
-              </button>
-            );
-          })}
-        </div>
+
 
         {/* Heatmap */}
         <div className="mb-4 sm:mb-5">
@@ -585,9 +680,36 @@ export default function History() {
                   <HeatLegendNeon />
                 </div>
 
-                {loading ? (
+                {/* Month nav */}
+                <div className="mb-4 flex items-center justify-between gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setMonthOffset((x) => x - 1)}
+                    className="rounded-xl border border-white/14 bg-white/[0.06] px-3 py-2 text-xs font-semibold text-white/85 hover:bg-white/[0.10] transition"
+                  >
+                    ← Prev
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setMonthOffset(0)}
+                    className="rounded-xl border border-white/14 bg-white/[0.06] px-3 py-2 text-xs font-semibold text-white/80 hover:bg-white/[0.10] transition"
+                  >
+                    Today
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setMonthOffset((x) => x + 1)}
+                    className="rounded-xl border border-white/14 bg-white/[0.06] px-3 py-2 text-xs font-semibold text-white/85 hover:bg-white/[0.10] transition"
+                  >
+                    Next →
+                  </button>
+                </div>
+
+                {loading || monthLoading ? (
                   <div className="text-sm text-white/70">Loading…</div>
-                ) : heatCellsDesc.length === 0 ? (
+                ) : heatCellsForMonth.length === 0 ? (
                   <div className="text-sm text-white/70">No days to show.</div>
                 ) : (
                   <>
@@ -799,5 +921,5 @@ export default function History() {
 }
 
 // ==========================
-// End of Version 10 — src/pages/History.tsx
+// End of Version 11 — src/pages/History.tsx
 // ==========================

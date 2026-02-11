@@ -25,6 +25,6 @@ dist-ssr
 
 #.env.local
 .env.local
-.en.production
+.env.production
 
 serviceAccountKey.json

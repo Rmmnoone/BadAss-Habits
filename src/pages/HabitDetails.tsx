@@ -9,7 +9,7 @@
 // - UI style matches existing glass/dark cards
 // ==========================
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import Scene from "../components/Scene";
 import { useAuth } from "../auth/AuthProvider";
@@ -478,6 +478,40 @@ export default function HabitDetails() {
   const [schedOpen, setSchedOpen] = useState(false);
   const [savingSchedule, setSavingSchedule] = useState(false);
 
+
+//-------------------------------------------------------------------//
+
+const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+const menuRef = useRef<HTMLDivElement | null>(null);
+
+useEffect(() => {
+  if (!mobileMenuOpen) return;
+
+  function onPointerDown(e: MouseEvent | TouchEvent) {
+    const target = e.target as Node | null;
+    if (!target) return;
+    if (menuRef.current && !menuRef.current.contains(target)) {
+      setMobileMenuOpen(false);
+    }
+  }
+
+  function onKeyDown(e: KeyboardEvent) {
+    if (e.key === "Escape") setMobileMenuOpen(false);
+  }
+
+  document.addEventListener("mousedown", onPointerDown, true);
+  document.addEventListener("touchstart", onPointerDown, true);
+  document.addEventListener("keydown", onKeyDown);
+
+  return () => {
+    document.removeEventListener("mousedown", onPointerDown, true);
+    document.removeEventListener("touchstart", onPointerDown, true);
+    document.removeEventListener("keydown", onKeyDown);
+  };
+}, [mobileMenuOpen]);
+
+//-------------------------------------------------------------------//
+
   // canonical schedule read (subdoc)
   const { schedule, loading: scheduleLoading } = useHabitSchedule(uid, habitId || null);
 
@@ -607,7 +641,7 @@ export default function HabitDetails() {
 
   const headerTitle = habit ? habit.name : "Habit";
   const headerSubtitle = habit
-    ? "Use the month view to tick days (future allowed). The list below is descending."
+    ? "Use the month view to tick days (future allowed)."
     : "Loading habit…";
 
   const summary = useMemo(() => {
@@ -653,40 +687,107 @@ export default function HabitDetails() {
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
-            <Link
-              to="/habits"
-              className="rounded-xl border border-white/14
-                         bg-gradient-to-b from-white/[0.12] to-white/[0.05]
-                         backdrop-blur-2xl px-4 py-2 text-sm font-semibold text-white/90
-                         hover:from-white/[0.16] hover:to-white/[0.07] transition
-                         shadow-[0_28px_80px_-60px_rgba(0,0,0,0.98)]"
-            >
-              Habits
-            </Link>
+          
 
-            <Link
-              to="/"
-              className="rounded-xl border border-white/14
-                         bg-gradient-to-b from-white/[0.12] to-white/[0.05]
-                         backdrop-blur-2xl px-4 py-2 text-sm font-semibold text-white/90
-                         hover:from-white/[0.16] hover:to-white/[0.07] transition
-                         shadow-[0_28px_80px_-60px_rgba(0,0,0,0.98)]"
-            >
-              Dashboard
-            </Link>
+          {/* Desktop nav (hide on mobile) */}
+<div className="hidden sm:flex items-center gap-2">
+  <Link
+    to="/habits"
+    className="rounded-xl border border-white/14 bg-gradient-to-b from-white/[0.12] to-white/[0.05]
+               backdrop-blur-2xl px-4 py-2 text-sm font-semibold text-white/90
+               hover:from-white/[0.16] hover:to-white/[0.07] transition
+               shadow-[0_28px_80px_-60px_rgba(0,0,0,0.98)]"
+  >
+    Habits
+  </Link>
 
-            <button
-              onClick={onLogout}
-              className="rounded-xl border border-white/14
-                         bg-gradient-to-b from-white/[0.12] to-white/[0.05]
-                         backdrop-blur-2xl px-4 py-2 text-sm font-semibold text-white/90
-                         hover:from-white/[0.16] hover:to-white/[0.07] transition
-                         shadow-[0_28px_80px_-60px_rgba(0,0,0,0.98)]"
-            >
-              Logout
-            </button>
-          </div>
+  <Link
+    to="/"
+    className="rounded-xl border border-white/14 bg-gradient-to-b from-white/[0.12] to-white/[0.05]
+               backdrop-blur-2xl px-4 py-2 text-sm font-semibold text-white/90
+               hover:from-white/[0.16] hover:to-white/[0.07] transition
+               shadow-[0_28px_80px_-60px_rgba(0,0,0,0.98)]"
+  >
+    Dashboard
+  </Link>
+
+    <Link
+      to="/history"
+      className="rounded-xl border border-white/14
+                 bg-gradient-to-b from-white/[0.12] to-white/[0.05]
+                 backdrop-blur-2xl px-4 py-2 text-sm font-semibold text-white/90
+                 hover:from-white/[0.16] hover:to-white/[0.07] transition
+                 shadow-[0_28px_80px_-60px_rgba(0,0,0,0.98)]"
+    >
+      History
+    </Link>
+
+
+  <button
+    onClick={onLogout}
+    className="rounded-xl border border-white/14 bg-gradient-to-b from-white/[0.12] to-white/[0.05]
+               backdrop-blur-2xl px-4 py-2 text-sm font-semibold text-white/90
+               hover:from-white/[0.16] hover:to-white/[0.07] transition
+               shadow-[0_28px_80px_-60px_rgba(0,0,0,0.98)]"
+  >
+    Logout
+  </button>
+</div>
+
+{/* Mobile hamburger */}
+<div ref={menuRef} className="sm:hidden relative">
+  <button
+    onClick={() => setMobileMenuOpen((v) => !v)}
+    className="h-10 w-10 rounded-xl border border-white/14 bg-white/[0.10]
+               flex items-center justify-center text-white text-lg"
+    aria-label="Open menu"
+  >
+    ☰
+  </button>
+
+  {mobileMenuOpen && (
+    <div
+      className="absolute right-0 mt-2 w-44 rounded-xl border border-white/14
+                 bg-[#0b0c24]/90 backdrop-blur-xl shadow-xl z-50 overflow-hidden"
+      onMouseDown={(e) => e.stopPropagation()}
+      onTouchStart={(e) => e.stopPropagation()}
+    >
+      <Link
+        to="/habits"
+        onClick={() => setMobileMenuOpen(false)}
+        className="block px-4 py-3 text-sm text-white/90 hover:bg-white/[0.08]"
+      >
+        Habits
+      </Link>
+      <Link
+        to="/history"
+        onClick={() => setMobileMenuOpen(false)}
+        className="block px-4 py-3 text-sm text-white/90 hover:bg-white/[0.08]"
+      >
+        History
+      </Link>
+      <Link
+        to="/"
+        onClick={() => setMobileMenuOpen(false)}
+        className="block px-4 py-3 text-sm text-white/90 hover:bg-white/[0.08]"
+      >
+        Dashboard
+      </Link>
+      <button
+        onClick={() => {
+          setMobileMenuOpen(false);
+          onLogout();
+        }}
+        className="w-full text-left px-4 py-3 text-sm text-white/90 hover:bg-white/[0.08]"
+      >
+        Logout
+      </button>
+    </div>
+  )}
+</div>
+
+
+
         </div>
 
         {/* NEW: Schedule & Reminder */}
@@ -836,62 +937,81 @@ export default function HabitDetails() {
         </DarkCard>
 
         {/* Range selector */}
-        <div className="mt-4 mb-4 flex items-center gap-2 flex-wrap">
-          {[7, 30, 90].map((n) => {
-            const activeBtn = range === n;
-            return (
-              <button
-                key={n}
-                onClick={() => setRange(n as any)}
-                className={`rounded-xl border px-4 py-2 text-sm font-semibold backdrop-blur-2xl transition
-                  ${
-                    activeBtn
-                      ? "border-white/30 bg-gradient-to-b from-white/[0.22] to-white/[0.10] text-white ring-2 ring-white/35 shadow-[0_18px_55px_-35px_rgba(255,255,255,0.35)]"
-                      : "border-white/14 bg-white/[0.05] text-white/70 hover:bg-white/[0.10] hover:text-white/85"
-                  }`}
-              >
-                {activeBtn ? `✓ Last ${n} days` : `Last ${n} days`}
-              </button>
-            );
-          })}
+        
+        {/* Range selector */}
+<div className="mt-4 mb-4 flex flex-col gap-3">
+  {/* Mobile: dropdown */}
+  <div className="sm:hidden">
+    <label className="block text-[11px] text-white/60 mb-2">Range</label>
 
-          <button
-            onClick={() => setRange("all")}
-            className={`rounded-xl border px-4 py-2 text-sm font-semibold backdrop-blur-2xl transition
-              ${
-                range === "all"
-                  ? "border-white/30 bg-gradient-to-b from-white/[0.22] to-white/[0.10] text-white ring-2 ring-white/35 shadow-[0_18px_55px_-35px_rgba(255,255,255,0.35)]"
-                  : "border-white/14 bg-white/[0.05] text-white/70 hover:bg-white/[0.10] hover:text-white/85"
-              }`}
-          >
-            {range === "all" ? "✓ All since created" : "All since created"}
-          </button>
+    <select
+      value={range === "all" ? "all" : String(range)}
+      onChange={(e) => setRange(e.target.value === "all" ? "all" : (Number(e.target.value) as any))}
+      className="h-10 w-full rounded-xl border border-white/14 bg-white/[0.07] px-3 text-sm text-white/90 outline-none"
+    >
+      <option value="7">Last 7 days</option>
+      <option value="30">Last 30 days</option>
+      <option value="90">Last 90 days</option>
+      <option value="all">All since created</option>
+    </select>
+  </div>
 
-          <div className="ml-auto flex items-center gap-2">
-            <div className="rounded-xl border border-white/14 bg-white/[0.06] px-3 py-2 text-xs text-white/70">
-              Done: <span className="text-white/90 font-semibold">{summary.doneCount}</span> /{" "}
-              <span className="text-white/80">{summary.total}</span>
-              <span className="mx-2 text-white/30">•</span>
-              Rate: <span className="text-white/90 font-semibold">{summary.rate}</span>
-            </div>
-          </div>
+  {/* Desktop: buttons */}
+  <div className="hidden sm:flex items-center gap-2 flex-wrap">
+    {[7, 30, 90].map((n) => {
+      const activeBtn = range === n;
+      return (
+        <button
+          key={n}
+          onClick={() => setRange(n as any)}
+          className={`rounded-xl border px-4 py-2 text-sm font-semibold backdrop-blur-2xl transition
+            ${
+              activeBtn
+                ? "border-white/30 bg-gradient-to-b from-white/[0.22] to-white/[0.10] text-white ring-2 ring-white/35 shadow-[0_18px_55px_-35px_rgba(255,255,255,0.35)]"
+                : "border-white/14 bg-white/[0.05] text-white/70 hover:bg-white/[0.10] hover:text-white/85"
+            }`}
+        >
+          {activeBtn ? `✓ Last ${n} days` : `Last ${n} days`}
+        </button>
+      );
+    })}
 
-          {range === "all" ? (
-            <div className="w-full text-xs text-white/45">
-              Note: MVP currently caps “All” at ~2 years to avoid heavy reads.
-            </div>
-          ) : null}
-        </div>
+    <button
+      onClick={() => setRange("all")}
+      className={`rounded-xl border px-4 py-2 text-sm font-semibold backdrop-blur-2xl transition
+        ${
+          range === "all"
+            ? "border-white/30 bg-gradient-to-b from-white/[0.22] to-white/[0.10] text-white ring-2 ring-white/35 shadow-[0_18px_55px_-35px_rgba(255,255,255,0.35)]"
+            : "border-white/14 bg-white/[0.05] text-white/70 hover:bg-white/[0.10] hover:text-white/85"
+        }`}
+    >
+      {range === "all" ? "✓ All since created" : "All since created"}
+    </button>
+  </div>
+
+  {/* Done/Rate always on its own line (no pushing / awkward wrap) */}
+  <div className="flex justify-end">
+    <div className="rounded-xl border border-white/14 bg-white/[0.06] px-3 py-2 text-xs text-white/70">
+      Done: <span className="text-white/90 font-semibold">{summary.doneCount}</span> /{" "}
+      <span className="text-white/80">{summary.total}</span>
+      <span className="mx-2 text-white/30">•</span>
+      Rate: <span className="text-white/90 font-semibold">{summary.rate}</span>
+    </div>
+  </div>
+
+  {range === "all" ? (
+    <div className="text-xs text-white/45">
+      Note: MVP currently caps “All” at ~2 years to avoid heavy reads.
+    </div>
+  ) : null}
+</div>
+
 
         {/* Descending list */}
         <DarkCard
           title="Completions"
           subtitle="Descending list (today, yesterday, …)"
-          right={
-            <span className="inline-flex items-center rounded-full border border-white/14 bg-white/[0.07] px-3 py-1 text-xs text-white/75 backdrop-blur-2xl">
-              MVP
-            </span>
-          }
+          
         >
           {habitsLoading || !habitId ? (
             <div className="text-sm text-white/70">Loading…</div>

@@ -1,7 +1,11 @@
 // ==========================
-// Version 3 — src/pages/Admin.tsx
-// - v2 + Fix build error (usersErr is now rendered)
-// - Shows load errors in the Users panel
+// Version 4 — src/pages/Admin.tsx
+// - v3 + Mobile polish:
+//   * Header buttons stack on mobile
+//   * Raw claims collapsible (default hidden)
+//   * User rows: compact on mobile (chips hidden on mobile)
+//   * Inspect actions: Grant/Revoke side-by-side on mobile
+//   * Mobile-friendly panel max heights
 // ==========================
 
 import React, { useEffect, useMemo, useState } from "react";
@@ -43,6 +47,7 @@ export default function Admin() {
   const [whoLoading, setWhoLoading] = useState(false);
   const [who, setWho] = useState<{ uid: string; claims: Record<string, any> } | null>(null);
   const [whoMsg, setWhoMsg] = useState<string | null>(null);
+  const [showRawClaims, setShowRawClaims] = useState(false);
 
   // Set admin state
   const [setAdminBusy, setSetAdminBusy] = useState(false);
@@ -111,6 +116,7 @@ export default function Admin() {
           : "✅ Admin revoked. The target user must refresh token (logout/login or refresh claims) to lose it."
       );
 
+      // If the selected user is you, refresh claims now so the UI stays consistent
       try {
         await refreshClaims();
       } catch {
@@ -142,17 +148,18 @@ export default function Admin() {
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-[#05061A] via-[#070625] to-[#040413] text-white">
-      <div className="mx-auto max-w-6xl p-6">
-        <div className="flex items-center justify-between gap-3">
+      <div className="mx-auto max-w-6xl p-4 sm:p-6">
+        {/* Header */}
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <div className="text-2xl font-semibold tracking-tight">Admin</div>
             <div className="mt-1 text-sm text-white/60">Internal diagnostics • admin-only</div>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-2">
             <button
               onClick={() => runWhoAmI()}
-              className="rounded-xl border border-white/12 bg-white/[0.08] px-4 py-2 text-sm font-semibold text-white/90 hover:bg-white/[0.12] disabled:opacity-40"
+              className="w-full sm:w-auto rounded-xl border border-white/12 bg-white/[0.08] px-4 py-2 text-sm font-semibold text-white/90 hover:bg-white/[0.12] disabled:opacity-40"
               disabled={whoLoading}
               title="Server-side check of your token claims"
             >
@@ -161,7 +168,7 @@ export default function Admin() {
 
             <button
               onClick={() => refreshClaims()}
-              className="rounded-xl border border-white/12 bg-white/[0.08] px-4 py-2 text-sm font-semibold text-white/90 hover:bg-white/[0.12]"
+              className="w-full sm:w-auto rounded-xl border border-white/12 bg-white/[0.08] px-4 py-2 text-sm font-semibold text-white/90 hover:bg-white/[0.12]"
               title="Refresh ID token claims (use after granting/revoking admin)"
             >
               Refresh claims
@@ -184,16 +191,33 @@ export default function Admin() {
                 ) : who ? (
                   <>
                     <div className="text-xs text-white/70">
-                      uid: <span className="text-white/90">{who.uid}</span>
+                      uid: <span className="text-white/90 break-all">{who.uid}</span>
                     </div>
+
                     <div className="mt-1 text-xs text-white/70">
                       claims.admin:{" "}
-                      <span className={`font-semibold ${who.claims?.admin === true ? "text-emerald-300" : "text-rose-300"}`}>
+                      <span
+                        className={`font-semibold ${
+                          who.claims?.admin === true ? "text-emerald-300" : "text-rose-300"
+                        }`}
+                      >
                         {String(who.claims?.admin === true)}
                       </span>
                     </div>
-                    <div className="mt-2 text-[11px] text-white/45 break-all">
-                      raw claims: {JSON.stringify(who.claims ?? {}, null, 0)}
+
+                    <div className="mt-3">
+                      <button
+                        onClick={() => setShowRawClaims((v) => !v)}
+                        className="rounded-lg border border-white/12 bg-white/[0.06] px-3 py-1.5 text-[11px] font-semibold text-white/80 hover:bg-white/[0.10]"
+                      >
+                        {showRawClaims ? "Hide raw claims" : "Show raw claims"}
+                      </button>
+
+                      {showRawClaims ? (
+                        <div className="mt-2 text-[11px] text-white/45 break-all">
+                          raw claims: {JSON.stringify(who.claims ?? {}, null, 0)}
+                        </div>
+                      ) : null}
                     </div>
                   </>
                 ) : (
@@ -218,7 +242,7 @@ export default function Admin() {
               ) : null}
             </div>
 
-            <div className="max-h-[520px] overflow-auto">
+            <div className="max-h-[60vh] sm:max-h-[520px] overflow-auto">
               {loadingUsers && users.length === 0 ? (
                 <div className="p-5 text-sm text-white/70">Loading…</div>
               ) : users.length === 0 ? (
@@ -227,25 +251,36 @@ export default function Admin() {
                 <ul className="divide-y divide-white/10">
                   {users.map((u) => {
                     const active = u.uid === selectedUid;
+
                     return (
                       <li key={u.uid}>
                         <button
                           onClick={() => setSelectedUid(u.uid)}
-                          className={`w-full text-left px-5 py-4 hover:bg-white/[0.06] ${active ? "bg-white/[0.08]" : ""}`}
+                          className={`w-full text-left px-4 sm:px-5 py-4 hover:bg-white/[0.06] ${
+                            active ? "bg-white/[0.08]" : ""
+                          }`}
                         >
-                          <div className="flex items-center justify-between gap-3">
+                          <div className="flex items-start justify-between gap-3">
                             <div className="min-w-0">
                               <div className="truncate text-sm font-semibold">{u.email ?? "(no email)"}</div>
                               <div className="mt-1 truncate text-xs text-white/55">{u.uid}</div>
+
+                              {/* Mobile compact meta */}
+                              <div className="mt-2 space-y-1 sm:hidden">
+                                <div className="text-[11px] text-white/55">created: {u.createdAt ?? "—"}</div>
+                                <div className="text-[11px] text-white/55">last sign-in: {u.lastSignInTime ?? "—"}</div>
+                              </div>
                             </div>
+
                             {u.disabled ? (
-                              <span className="rounded-full border border-white/12 bg-white/[0.06] px-2 py-1 text-[11px] text-white/70">
+                              <span className="shrink-0 rounded-full border border-white/12 bg-white/[0.06] px-2 py-1 text-[11px] text-white/70">
                                 disabled
                               </span>
                             ) : null}
                           </div>
 
-                          <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-white/55">
+                          {/* Desktop chips */}
+                          <div className="mt-2 hidden sm:flex flex-wrap gap-2 text-[11px] text-white/55">
                             <span className="rounded-full border border-white/10 bg-white/[0.04] px-2 py-1">
                               created: {u.createdAt ?? "—"}
                             </span>
@@ -282,20 +317,21 @@ export default function Admin() {
 
             <div className="p-5">
               {!selected ? (
-                <div className="text-sm text-white/70">Select a user from the left.</div>
+                <div className="text-sm text-white/70">Select a user from the list above.</div>
               ) : (
                 <>
-                  <div className="flex items-start justify-between gap-3">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                     <div className="min-w-0">
                       <div className="text-sm font-semibold truncate">{selected.email ?? "(no email)"}</div>
                       <div className="mt-1 text-xs text-white/55 break-all">{selected.uid}</div>
                     </div>
 
-                    <div className="flex flex-col gap-2">
+                    {/* Actions: side-by-side on mobile */}
+                    <div className="flex w-full gap-2 sm:w-auto sm:flex-col sm:gap-2">
                       <button
                         onClick={() => toggleAdminForSelected(true)}
                         disabled={setAdminBusy}
-                        className="rounded-xl border border-white/12 bg-white/[0.10] px-3 py-1.5 text-xs font-semibold text-white/90 hover:bg-white/[0.14] disabled:opacity-40"
+                        className="w-1/2 sm:w-auto rounded-xl border border-white/12 bg-white/[0.10] px-3 py-2 text-xs font-semibold text-white/90 hover:bg-white/[0.14] disabled:opacity-40"
                         title="Grant admin claim to this uid"
                       >
                         Grant admin
@@ -303,7 +339,7 @@ export default function Admin() {
                       <button
                         onClick={() => toggleAdminForSelected(false)}
                         disabled={setAdminBusy}
-                        className="rounded-xl border border-white/12 bg-white/[0.06] px-3 py-1.5 text-xs font-semibold text-white/80 hover:bg-white/[0.10] disabled:opacity-40"
+                        className="w-1/2 sm:w-auto rounded-xl border border-white/12 bg-white/[0.06] px-3 py-2 text-xs font-semibold text-white/80 hover:bg-white/[0.10] disabled:opacity-40"
                         title="Revoke admin claim from this uid"
                       >
                         Revoke admin
@@ -349,7 +385,7 @@ export default function Admin() {
                     </button>
                   </div>
 
-                  <div className="mt-3 max-h-[320px] overflow-auto rounded-xl border border-white/10">
+                  <div className="mt-3 max-h-[40vh] sm:max-h-[320px] overflow-auto rounded-xl border border-white/10">
                     {loadingLogs ? (
                       <div className="p-4 text-sm text-white/70">Loading…</div>
                     ) : logs.length === 0 ? (
@@ -396,5 +432,5 @@ export default function Admin() {
 }
 
 // ==========================
-// End of Version 3 — src/pages/Admin.tsx
+// End of Version 4 — src/pages/Admin.tsx
 // ==========================

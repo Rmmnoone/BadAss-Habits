@@ -1,7 +1,7 @@
 // ==========================
 // Version 25 — src/pages/Dashboard.tsx
 // ==========================
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { useAuth } from "../auth/AuthProvider";
 import Scene from "../components/Scene";
@@ -335,6 +335,10 @@ function buildPushStatus(args: {
 }
 
 export default function Dashboard() {
+
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+
   const { user, logout } = useAuth();
   const uid = user?.uid ?? null;
 
@@ -471,6 +475,22 @@ export default function Dashboard() {
       quietActiveNow,
     };
   }
+
+
+useEffect(() => {
+  if (!mobileMenuOpen) return;
+
+  function onPointerDown(e: PointerEvent) {
+    const el = menuRef.current;
+    if (!el) return;
+    if (el.contains(e.target as Node)) return; // clicked inside
+    setMobileMenuOpen(false); // clicked outside
+  }
+
+  document.addEventListener("pointerdown", onPointerDown);
+  return () => document.removeEventListener("pointerdown", onPointerDown);
+}, [mobileMenuOpen]);
+
 
   useEffect(() => {
     if (!debugOn) return;
@@ -952,40 +972,81 @@ export default function Dashboard() {
             </div>
           </div>
 
-          <div className="flex items-center gap-3">
-            <Link
-              to="/habits"
-              className="rounded-xl border border-white/14
-               bg-gradient-to-b from-white/[0.12] to-white/[0.05]
+          {/* Desktop nav */}
+<div className="hidden sm:flex items-center gap-3">
+  <Link
+    to="/habits"
+    className="rounded-xl border border-white/14 bg-gradient-to-b from-white/[0.12] to-white/[0.05]
                backdrop-blur-2xl px-4 py-2 text-sm font-semibold text-white/90
-               hover:from-white/[0.16] hover:to-white/[0.07] transition
-               shadow-[0_28px_80px_-60px_rgba(0,0,0,0.98)]"
-            >
-              Habits
-            </Link>
+               hover:from-white/[0.16] hover:to-white/[0.07] transition"
+  >
+    Habits
+  </Link>
 
-            <Link
-              to="/history"
-              className="rounded-xl border border-white/14
-               bg-gradient-to-b from-white/[0.12] to-white/[0.05]
+  <Link
+    to="/history"
+    className="rounded-xl border border-white/14 bg-gradient-to-b from-white/[0.12] to-white/[0.05]
                backdrop-blur-2xl px-4 py-2 text-sm font-semibold text-white/90
-               hover:from-white/[0.16] hover:to-white/[0.07] transition
-               shadow-[0_28px_80px_-60px_rgba(0,0,0,0.98)]"
-            >
-              History
-            </Link>
+               hover:from-white/[0.16] hover:to-white/[0.07] transition"
+  >
+    History
+  </Link>
 
-            <button
-              onClick={logout}
-              className="rounded-xl border border-white/14
-               bg-gradient-to-b from-white/[0.12] to-white/[0.05]
+  <button
+    onClick={logout}
+    className="rounded-xl border border-white/14 bg-gradient-to-b from-white/[0.12] to-white/[0.05]
                backdrop-blur-2xl px-4 py-2 text-sm font-semibold text-white/90
-               hover:from-white/[0.16] hover:to-white/[0.07] transition
-               shadow-[0_28px_80px_-60px_rgba(0,0,0,0.98)]"
-            >
-              Logout
-            </button>
-          </div>
+               hover:from-white/[0.16] hover:to-white/[0.07] transition"
+  >
+    Logout
+  </button>
+</div>
+
+{/* Mobile hamburger */}
+<div ref={menuRef} className="sm:hidden relative">
+
+<div className="sm:hidden relative">
+  <button
+    onClick={() => setMobileMenuOpen((v) => !v)}
+    className="h-10 w-10 rounded-xl border border-white/14 bg-white/[0.10]
+               flex items-center justify-center text-white text-lg"
+    aria-label="Open menu"
+  >
+    ☰
+  </button>
+
+  {mobileMenuOpen && (
+    <div
+      className="absolute right-0 mt-2 w-40 rounded-xl border border-white/14
+                 bg-[#0b0c24]/90 backdrop-blur-xl shadow-xl z-50"
+    >
+      <Link
+        to="/habits"
+        onClick={() => setMobileMenuOpen(false)}
+        className="block px-4 py-3 text-sm text-white/90 hover:bg-white/[0.08]"
+      >
+        Habits
+      </Link>
+      <Link
+        to="/history"
+        onClick={() => setMobileMenuOpen(false)}
+        className="block px-4 py-3 text-sm text-white/90 hover:bg-white/[0.08]"
+      >
+        History
+      </Link>
+      <button
+        onClick={() => {
+          setMobileMenuOpen(false);
+          logout();
+        }}
+        className="w-full text-left px-4 py-3 text-sm text-white/90 hover:bg-white/[0.08]"
+      >
+        Logout
+      </button>
+    </div>
+  )}
+</div>
+</div>
         </div>
 
 
@@ -1190,11 +1251,11 @@ export default function Dashboard() {
           </DarkCard>
         </div>
 
-        <div className="mt-10 text-center text-xs text-white/90">
+        <div className="mt-4 text-center text-xs text-white/90">
           Tip: Install the app on your phone for the best reminder experience.
         </div>
 
-        <div className="mt-10 text-center text-xs text-white/90">
+        <div className="mt-4 text-center text-xs text-white/90">
           
         </div>
 
@@ -1214,47 +1275,44 @@ export default function Dashboard() {
               type="button"
               onClick={() => toggleGlobalReminders(!globalEnabled)}
               disabled={!uid || globalUi.status === "working" || pushUi.status === "working"}
-              className={`relative inline-flex h-9 w-44 items-center rounded-full border transition
-                ${
-                  globalEnabled
-                    ? "border-white/20 bg-white/[0.16]"
-                    : "border-white/14 bg-white/[0.08] hover:bg-white/[0.12]"
-                }
+              className={`relative inline-flex h-8 w-40 items-center rounded-full border transition overflow-hidden
+                ${globalEnabled ? "border-white/20 bg-white/[0.16]" : "border-white/14 bg-white/[0.08] hover:bg-white/[0.12]"}
                 disabled:opacity-60`}
               aria-label="Toggle global reminders"
               title="Turns ALL notifications on/off (exact reminders + daily digest)"
             >
-              <span
-                className={`absolute left-1 top-1 h-7 w-7 rounded-full transition
-                  ${globalEnabled ? "translate-x-[120px] bg-white/80" : "translate-x-0 bg-white/55"}`}
-              />
-              <span className="w-full text-center text-[11px] font-semibold text-white/80">
-                {globalUi.status === "working" ? "Saving…" : globalEnabled ? "Reminders ON" : "Reminders OFF"}
-              </span>
-            </button>
+            <span
+              className={`absolute left-1 top-1 h-6 w-6 rounded-full transition-transform
+                ${globalEnabled ? "translate-x-[128px] bg-white/80" : "translate-x-0 bg-white/55"}`}
+            />
+            <span className="w-full text-center text-[10px] font-semibold text-white/85">
+              {globalUi.status === "working" ? "Saving…" : globalEnabled ? "Reminders ON" : "Reminders OFF"}
+            </span>
+          </button>
 
-            <button
-              type="button"
-              onClick={enableNotificationsClick}
-              disabled={pushButtonDisabled}
-              className={`relative inline-flex h-9 w-44 items-center rounded-full border transition
-                ${
-                  notifStatus === "granted"
-                    ? "border-white/20 bg-white/[0.16]"
-                    : "border-white/14 bg-white/[0.08] hover:bg-white/[0.12]"
-                }
-                disabled:opacity-60`}
-              aria-label="Enable notifications"
-              title={!notifSupported ? "Notifications unsupported" : undefined}
-            >
-              <span
-                className={`absolute left-1 top-1 h-7 w-7 rounded-full transition
-                  ${notifStatus === "granted" ? "translate-x-[120px] bg-white/80" : "translate-x-0 bg-white/55"}`}
-              />
-              <span className="w-full text-center text-[11px] font-semibold text-white/80">
-                {pushUi.status === "working" ? "…" : `Push ${permissionLabel(notifStatus)}`}
-              </span>
-            </button>
+<button
+  type="button"
+  onClick={enableNotificationsClick}
+  disabled={pushButtonDisabled}
+  className={`relative inline-flex h-8 w-40 items-center rounded-full border transition overflow-hidden
+    ${
+      notifStatus === "granted"
+        ? "border-white/20 bg-white/[0.16]"
+        : "border-white/14 bg-white/[0.08] hover:bg-white/[0.12]"
+    }
+    disabled:opacity-60`}
+  aria-label="Enable notifications"
+  title={!notifSupported ? "Notifications unsupported" : undefined}
+>
+  <span
+    className={`absolute left-1 top-1 h-6 w-6 rounded-full transition-transform
+      ${notifStatus === "granted" ? "translate-x-[128px] bg-white/80" : "translate-x-0 bg-white/55"}`}
+  />
+  <span className="w-full text-center text-[10px] font-semibold text-white/85">
+    {pushUi.status === "working" ? "…" : `Push ${permissionLabel(notifStatus)}`}
+  </span>
+</button>
+
           </div>
 
           {/* Timezone controls */}
@@ -1278,7 +1336,7 @@ export default function Dashboard() {
                   setTzUi({ status: "idle" });
                 }}
                 disabled={!uid || tzUi.status === "working"}
-                className="rounded-xl border border-white/14 bg-white/[0.08] px-4 py-2 text-sm font-semibold text-white/90
+                className="rounded-xl border border-white/1 bg-white/[0.08] px-4 py-1 text-xs font-semibold text-white/90
                            hover:bg-white/[0.12] disabled:opacity-60 disabled:hover:bg-white/[0.08]
                            shadow-[0_18px_55px_-45px_rgba(0,0,0,0.98)]"
                 title="Set timezone to match this device"
@@ -1424,32 +1482,33 @@ export default function Dashboard() {
               </div>
 
               <button
-                type="button"
-                onClick={() => {
-                  const next = !quietEnabled;
-                  setQuietEnabled(next);
-                  setQuietDirty(true);
-                  setQuietUi({ status: "idle" });
-                }}
-                disabled={!uid || quietUi.status === "working"}
-                className={`relative inline-flex h-9 w-28 items-center rounded-full border transition
-                    ${
-                      quietEnabled
-                        ? "border-white/20 bg-white/[0.16]"
-                        : "border-white/14 bg-white/[0.08] hover:bg-white/[0.12]"
-                    }
-                    disabled:opacity-60`}
-                aria-label="Toggle quiet hours"
-                title="Pauses all reminders during the quiet window"
-              >
-                <span
-                  className={`absolute left-1 top-1 h-7 w-7 rounded-full transition
-                      ${quietEnabled ? "translate-x-[72px] bg-white/80" : "translate-x-0 bg-white/55"}`}
-                />
-                <span className="w-full text-center text-[11px] font-semibold text-white/80">
-                  {quietEnabled ? "Quiet ON" : "Quiet OFF"}
-                </span>
-              </button>
+  type="button"
+  onClick={() => {
+    const next = !quietEnabled;
+    setQuietEnabled(next);
+    setQuietDirty(true);
+    setQuietUi({ status: "idle" });
+  }}
+  disabled={!uid || quietUi.status === "working"}
+  className={`relative inline-flex h-8 w-28 items-center rounded-full border transition overflow-hidden
+    ${
+      quietEnabled
+        ? "border-white/20 bg-white/[0.16]"
+        : "border-white/14 bg-white/[0.08] hover:bg-white/[0.12]"
+    }
+    disabled:opacity-60`}
+  aria-label="Toggle quiet hours"
+  title="Pauses all reminders during the quiet window"
+>
+  <span
+    className={`absolute left-1 top-1 h-6 w-6 rounded-full transition-transform
+      ${quietEnabled ? "translate-x-[80px] bg-white/80" : "translate-x-0 bg-white/55"}`}
+  />
+  <span className="w-full text-center text-[10px] font-semibold text-white/85">
+    {quietEnabled ? "Quiet ON" : "Quiet OFF"}
+  </span>
+</button>
+
             </div>
 
             <div className="mt-3 flex flex-col sm:flex-row sm:items-end gap-3">

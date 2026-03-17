@@ -1,9 +1,10 @@
 // ==========================
-// Version 5 — src/sw.ts
-// - Fixes TS build errors:
-//   * Avoids NotificationAction type (not in some TS DOM libs)
-//   * Uses a safe cast for renotify/requireInteraction/tag/actions
-// - Still honors FCM data options: tag, renotify, requireInteraction
+// Version 6 — src/sw.ts
+// - v5 + notification delivery diagnostics
+//   * Logs permission + showNotification success/failure
+//   * Handles DevTools "Push" (plain text) by showing it in body
+//   * Adds default body if empty, so you can visually confirm it showed
+//   * Adds notificationclose logging
 // - Keeps Workbox InjectManifest precache
 // ==========================
 
@@ -26,15 +27,32 @@ function asBool(v: any): boolean {
   return false;
 }
 
-function pickPayload(payload: RawPayload) {
+function safeString(v: any, fallback = ""): string {
+  if (v == null) return fallback;
+  try {
+    const s = String(v);
+    return s;
+  } catch {
+    return fallback;
+  }
+}
+
+function pickPayload(payload: RawPayload, rawText?: string) {
   // FCM often wraps as { data: { ... } }
   const d = payload?.data ?? payload ?? {};
 
-  const title = String(d.title ?? payload?.title ?? "BadAss Habits");
-  const body = String(d.body ?? payload?.body ?? "");
-  const url = String(d.url ?? payload?.fcmOptions?.link ?? "/");
+  const title = safeString(d.title ?? payload?.title, "BadAss Habits");
+  let body = safeString(d.body ?? payload?.body, "");
 
-  const tag = String(d.tag ?? "");
+  // If DevTools "Push" was used (plain text), show it so we can confirm visually
+  if (!body && rawText) body = rawText;
+
+  // If still empty, put a visible default so "nothing happened" is not ambiguous
+  if (!body) body = "Reminder received (no body provided).";
+
+  const url = safeString(d.url ?? payload?.fcmOptions?.link, "/");
+
+  const tag = safeString(d.tag, "");
   const renotify = asBool(d.renotify);
   const requireInteraction = asBool(d.requireInteraction);
 
@@ -47,12 +65,15 @@ function pickPayload(payload: RawPayload) {
 self.addEventListener("push", (event) => {
   const show = async () => {
     let payload: any = {};
+    let rawText = "";
+
+    // Parse payload (json -> text -> empty)
     try {
       payload = event?.data ? event.data.json() : {};
     } catch {
       try {
-        const raw = event?.data ? await event.data.text() : "";
-        payload = raw ? JSON.parse(raw) : {};
+        rawText = event?.data ? await event.data.text() : "";
+        payload = rawText ? JSON.parse(rawText) : {};
       } catch {
         payload = {};
       }
@@ -61,14 +82,19 @@ self.addEventListener("push", (event) => {
     // eslint-disable-next-line no-console
     console.log("[SW] push received", payload);
 
-    const { title, body, url, tag, renotify, requireInteraction, actions } = pickPayload(payload);
+    // eslint-disable-next-line no-console
+    console.log("[SW] notification permission (best-effort)", (self as any)?.Notification?.permission);
 
-    // Some TS DOM libs don't include renotify/requireInteraction/tag/actions
-    // Runtime supports them, so we cast to any for build.
+    const { title, body, url, tag, renotify, requireInteraction, actions } = pickPayload(payload, rawText);
+
     const opts: any = {
       body,
       data: { url },
-      icon: "/pwa-192.png",
+
+      // Icons must exist at root in prod, or at least not 404 to HTML.
+      // If these are missing, you'll still usually get a notification,
+      // but we keep them as-is.
+      icon: "/pwa-512.png",
       badge: "/pwa-192.png",
 
       tag: tag || undefined,
@@ -78,7 +104,14 @@ self.addEventListener("push", (event) => {
       actions: actions.length ? actions : undefined,
     };
 
-    await self.registration.showNotification(title, opts);
+    try {
+      await self.registration.showNotification(title, opts);
+      // eslint-disable-next-line no-console
+      console.log("[SW] showNotification OK", { title, body, tag: opts.tag, url });
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("[SW] showNotification FAILED", err, { title, body, tag: opts.tag, url });
+    }
   };
 
   event.waitUntil(show());
@@ -115,6 +148,14 @@ self.addEventListener("notificationclick", (event) => {
   );
 });
 
+self.addEventListener("notificationclose", (event) => {
+  // eslint-disable-next-line no-console
+  console.log("[SW] notification closed", {
+    title: event.notification?.title,
+    data: (event.notification as any)?.data,
+  });
+});
+
 // ==========================
-// End of Version 5 — src/sw.ts
+// End of Version 6 — src/sw.ts
 // ==========================

@@ -1,5 +1,10 @@
 // ==========================
-// Version 25 — src/pages/Dashboard.tsx
+// Version 27 — src/pages/Dashboard.tsx
+// - FIX: "Next reminder" must NOT show a time when reminders are OFF
+// - Next reminder only considers habits with reminders enabled:
+//    A) new: reminders.enabled === true (and uses schedule.times + reminders.time if present)
+//    B) legacy: reminderEnabled === true (uses reminderTime)
+// - Today list reminder pill now supports both new + legacy reminder shapes (UI unchanged)
 // ==========================
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
@@ -12,18 +17,12 @@ import { useHabits } from "../hooks/useHabits";
 import { lastNDaysKeys } from "../utils/dateKey";
 import { isDueOnDateKey } from "../utils/eligibility";
 import { useReminderScheduler } from "../hooks/useReminderScheduler";
-import { enablePushForUser } from "../utils/push";
+import { enablePushForUser, restorePushForUser } from "../utils/push";
 import { ensureUserDoc, setUserRemindersEnabled, setUserQuietHours, setUserTimezone } from "../firebase/users";
-import {
-  collection,
-  getCountFromServer,
-  getDoc,
-  doc,
-  query,
-  orderBy,
-  limit,
-  getDocs,
-} from "firebase/firestore";
+import { collection, getCountFromServer, getDoc, doc, query, orderBy, limit, getDocs } from "firebase/firestore";
+import { useDevice } from "../hooks/useDevice";
+import InstallPromptModal from "../components/InstallPromptModal";
+import { useInstallPrompt } from "../hooks/useInstallPrompt";
 
 //
 const tileClass =
@@ -177,6 +176,21 @@ function hmNowInTz(tz?: string | null): string | null {
   } catch {
     return null;
   }
+}
+
+// dateKey helpers
+function addDaysToDateKey(dateKey: string, addDays: number): string {
+  const m = String(dateKey || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return dateKey;
+  const y = Number(m[1]);
+  const mo = Number(m[2]);
+  const d = Number(m[3]);
+  const dt = new Date(Date.UTC(y, mo - 1, d));
+  dt.setUTCDate(dt.getUTCDate() + addDays);
+  const yy = String(dt.getUTCFullYear()).padStart(4, "0");
+  const mm = String(dt.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(dt.getUTCDate()).padStart(2, "0");
+  return `${yy}-${mm}-${dd}`;
 }
 
 type PushUiState =
@@ -335,7 +349,6 @@ function buildPushStatus(args: {
 }
 
 export default function Dashboard() {
-
   const menuRef = useRef<HTMLDivElement | null>(null);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
@@ -345,7 +358,7 @@ export default function Dashboard() {
   const loc = useLocation();
   const debugOn = useMemo(() => new URLSearchParams(loc.search).get("debug") === "1", [loc.search]);
 
-    const [userTz, setUserTz] = useState<string>("Europe/London");
+  const [userTz, setUserTz] = useState<string>("Europe/London");
   const { dateKey, dueItems, items, loading } = useToday(uid, userTz);
   const { active: activeHabits, loading: habitsLoading } = useHabits(uid);
 
@@ -362,7 +375,6 @@ export default function Dashboard() {
   const [tokenSnap, setTokenSnap] = useState<{ count: number | null; status: "idle" | "working" | "ok" | "error" }>(
     { count: null, status: "idle" }
   );
-
 
   const { permission } = useReminderScheduler({
     enabled: Boolean(uid),
@@ -426,6 +438,51 @@ export default function Dashboard() {
 
   const [debugSnap, setDebugSnap] = useState<Record<string, any>>({});
 
+
+  const install = useInstallPrompt();
+  const [installOpen, setInstallOpen] = useState(false);
+  const [installing, setInstalling] = useState(false);
+
+useEffect(() => {
+  if (!uid) return;
+
+  const snap = {
+    uidPresent: Boolean(uid),
+    isInstalled: install.isInstalled,
+    isDismissed: install.isDismissed,
+    mode: install.mode,
+    method: install.method,
+    canPromptNative: install.canPromptNative,
+    shouldShowIosHowTo: install.shouldShowIosHowTo,
+    os: install.device.os,
+    browser: install.device.browser,
+    desktopPlatform: install.device.desktopPlatform,
+    standalone: install.device.isStandalone,
+  };
+
+  console.log("[InstallUI] eligibility check:", snap);
+
+  // Never show if installed or dismissed for this page session
+  if (install.isInstalled || install.isDismissed) return;
+
+  const t = window.setTimeout(() => {
+    console.log("[InstallUI] opening modal now");
+    setInstallOpen(true);
+  }, 1200);
+
+  return () => window.clearTimeout(t);
+}, [
+  uid,
+  install.isInstalled,
+  install.isDismissed,
+  install.canPromptNative,
+  install.shouldShowIosHowTo,
+  install.device.os,
+  install.device.browser,
+  install.device.isStandalone,
+]);
+
+
   const nowHMUser = useMemo(() => {
     const hm = hmNowInTz(userTz);
     if (hm) return hm;
@@ -473,24 +530,37 @@ export default function Dashboard() {
       quietStart,
       quietEnd,
       quietActiveNow,
+
+//
+deviceOS: device.os,
+deviceBrowser: device.browser,
+deviceDesktopPlatform: device.desktopPlatform,
+deviceStandalone: device.isStandalone,
+deviceDisplayMode: device.displayMode,
+deviceCanInstallPrompt: device.canShowInstallPrompt,
+installMode: install.mode,
+installMethod: install.method,
+
+//
+
     };
   }
 
+  const device = useDevice();
 
-useEffect(() => {
-  if (!mobileMenuOpen) return;
+  useEffect(() => {
+    if (!mobileMenuOpen) return;
 
-  function onPointerDown(e: PointerEvent) {
-    const el = menuRef.current;
-    if (!el) return;
-    if (el.contains(e.target as Node)) return; // clicked inside
-    setMobileMenuOpen(false); // clicked outside
-  }
+    function onPointerDown(e: PointerEvent) {
+      const el = menuRef.current;
+      if (!el) return;
+      if (el.contains(e.target as Node)) return; // clicked inside
+      setMobileMenuOpen(false); // clicked outside
+    }
 
-  document.addEventListener("pointerdown", onPointerDown);
-  return () => document.removeEventListener("pointerdown", onPointerDown);
-}, [mobileMenuOpen]);
-
+    document.addEventListener("pointerdown", onPointerDown);
+    return () => document.removeEventListener("pointerdown", onPointerDown);
+  }, [mobileMenuOpen]);
 
   useEffect(() => {
     if (!debugOn) return;
@@ -507,6 +577,39 @@ useEffect(() => {
     return () => window.clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [debugOn]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function run() {
+      if (!uid) return;
+      if (!notifSupported) return;
+      if (!secureContext) return;
+      if (notifStatus !== "granted") return;
+
+      try {
+        const res = await restorePushForUser(uid);
+        if (cancelled || !res.ok) return;
+
+        try {
+          const colRef = collection(db, "users", uid, "pushTokens");
+          const agg = await getCountFromServer(colRef);
+          if (!cancelled) {
+            setTokenSnap({ count: agg.data().count ?? 0, status: "ok" });
+          }
+        } catch {
+          // ignore
+        }
+      } catch (e) {
+        console.log("[Dashboard] restore push error:", e);
+      }
+    }
+
+    run();
+    return () => {
+      cancelled = true;
+    };
+  }, [uid, notifSupported, secureContext, notifStatus]);
 
   useEffect(() => {
     let cancelled = false;
@@ -776,16 +879,95 @@ useEffect(() => {
     return { activeHabitsCount, dueCount, doneCount, todayConsistency };
   }, [items, dueItems]);
 
-  const nextReminderHM = useMemo(() => {
-    const times = (dueItems as any[])
-      .filter((h) => Boolean(h?.reminderEnabled) && isValidHHMM(h?.reminderTime))
-      .map((h) => String(h.reminderTime));
+  // --------------------------
+  // Next scheduled reminder (actual next push time)
+  // --------------------------
 
-    if (!times.length) return null;
+  // console.log("[NEXT_REMINDER_DEBUG] activeHabits", activeHabits);
+  // console.log("[NEXT_REMINDER_DEBUG] items", items);
 
-    const sorted = times.slice().sort((a, b) => hmToMinutes(a) - hmToMinutes(b));
-    return sorted[0] ?? null;
-  }, [dueItems]);
+  const nextReminder = useMemo(() => {
+    const nowHM = nowHMUser;
+    const nowMin = isValidHHMM(nowHM) ? hmToMinutes(nowHM) : null;
+
+    // Prefer full active habits list; fallback to items
+    const source: any[] =
+      Array.isArray(activeHabits) && activeHabits.length ? (activeHabits as any[]) : (items as any[]);
+
+    if (!source.length) return { kind: "none" as const, label: "No specific reminder", dateKey: null, hm: null };
+
+    // Extract specific reminder times from a habit (supports both shapes)
+    function getHabitTimes(h: any): string[] {
+      // Gate: only consider times if habit reminders are actually enabled
+      const newOn = h?.reminders?.enabled === true;
+      const legacyOn = Boolean(h?.reminderEnabled) === true;
+
+      if (!newOn && !legacyOn) return [];
+
+      // New shape: schedule.times (array)
+      const scheduleTimesRaw = h?.schedule?.times;
+      const scheduleTimes = Array.isArray(scheduleTimesRaw) ? scheduleTimesRaw.map((x: any) => String(x)) : [];
+      const validScheduleTimes = scheduleTimes.filter(isValidHHMM);
+
+      // New shape (optional): reminders.time
+      const newTime = newOn && isValidHHMM(h?.reminders?.time) ? [String(h.reminders.time)] : [];
+
+      // Legacy shape: reminderEnabled + reminderTime
+      const legacyTime = legacyOn && isValidHHMM(h?.reminderTime) ? [String(h.reminderTime)] : [];
+
+      // Merge, uniq, keep valid
+      const merged = Array.from(new Set([...validScheduleTimes, ...newTime, ...legacyTime])).filter(isValidHHMM);
+      return merged;
+    }
+
+    type Candidate = { dateKey: string; hm: string; minutes: number };
+
+    const candidates: Candidate[] = [];
+
+    // Look ahead up to 14 days (today + 13)
+    for (let d = 0; d < 14; d++) {
+      const dk = addDaysToDateKey(dateKey, d);
+
+      for (const h of source) {
+        const times = getHabitTimes(h);
+        if (!times.length) continue; // no specific reminder times
+
+        const due = isDueOnDateKey({ habit: h, dateKey: dk, minDateKey: null });
+        if (!due) continue;
+
+        for (const hm of times) {
+          const m = hmToMinutes(hm);
+
+          // If today, only consider future-or-now times
+          if (d === 0 && nowMin != null && m < nowMin) continue;
+
+          candidates.push({ dateKey: dk, hm, minutes: d * 1440 + m });
+        }
+      }
+    }
+
+    if (!candidates.length) {
+      return { kind: "none" as const, label: "No specific reminder", dateKey: null, hm: null };
+    }
+
+    candidates.sort((a, b) => a.minutes - b.minutes);
+    const best = candidates[0];
+
+    // Friendly label
+    const todayKey = dateKey;
+    const tomorrowKey = addDaysToDateKey(dateKey, 1);
+
+    let label = best.hm;
+    if (best.dateKey === todayKey) {
+      label = best.hm;
+    } else if (best.dateKey === tomorrowKey) {
+      label = `Tomorrow ${best.hm}`;
+    } else {
+      label = `${best.dateKey} ${best.hm}`;
+    }
+
+    return { kind: "ok" as const, label, dateKey: best.dateKey, hm: best.hm };
+  }, [activeHabits, items, dateKey, nowHMUser]);
 
   async function toggle(habitId: string, nextDone: boolean) {
     if (!uid) return;
@@ -885,14 +1067,7 @@ useEffect(() => {
     };
   }, [uid, habitsLoading, activeHabits, dateKey]);
 
-  const pushButtonDisabled =
-    !notifSupported || pushUi.status === "working" || notifStatus === "denied" || !uid;
-
- // const tokenYesNo = useMemo(() => {
-   // if (tokenSnap.status === "working") return "…";
-    //if (tokenSnap.status === "error" || tokenSnap.count === null) return "—";
-   // return tokenSnap.count > 0 ? "Yes" : "No";
- // }, [tokenSnap]);
+  const pushButtonDisabled = !notifSupported || pushUi.status === "working" || notifStatus === "denied" || !uid;
 
   const effectivePush = useMemo(() => {
     return buildPushStatus({
@@ -933,7 +1108,6 @@ useEffect(() => {
       ? "text-amber-200"
       : "text-rose-200";
 
-
   // --------------------------
   // Today UI summary helpers
   // --------------------------
@@ -942,10 +1116,13 @@ useEffect(() => {
   const todayLeftCount = Math.max(0, todayDueCount - todayDoneCount);
   const todayRatePct = todayDueCount === 0 ? 0 : Math.round((todayDoneCount / todayDueCount) * 100);
 
-      
   return (
+    <>
     <Scene className="min-h-screen relative overflow-hidden" contentClassName="relative p-4 sm:p-6">
       <div className="max-w-5xl mx-auto">
+
+
+
         {/* Header */}
         <div className="flex items-center justify-between gap-3 mb-5">
           <div className="flex items-center gap-3 min-w-0">
@@ -973,90 +1150,85 @@ useEffect(() => {
           </div>
 
           {/* Desktop nav */}
-<div className="hidden sm:flex items-center gap-3">
-  <Link
-    to="/habits"
-    className="rounded-xl border border-white/14 bg-gradient-to-b from-white/[0.12] to-white/[0.05]
+          <div className="hidden sm:flex items-center gap-3">
+            <Link
+              to="/habits"
+              className="rounded-xl border border-white/14 bg-gradient-to-b from-white/[0.12] to-white/[0.05]
                backdrop-blur-2xl px-4 py-2 text-sm font-semibold text-white/90
                hover:from-white/[0.16] hover:to-white/[0.07] transition"
-  >
-    Habits
-  </Link>
+            >
+              Habits
+            </Link>
 
-  <Link
-    to="/history"
-    className="rounded-xl border border-white/14 bg-gradient-to-b from-white/[0.12] to-white/[0.05]
+            <Link
+              to="/history"
+              className="rounded-xl border border-white/14 bg-gradient-to-b from-white/[0.12] to-white/[0.05]
                backdrop-blur-2xl px-4 py-2 text-sm font-semibold text-white/90
                hover:from-white/[0.16] hover:to-white/[0.07] transition"
-  >
-    History
-  </Link>
+            >
+              History
+            </Link>
 
-  <button
-    onClick={logout}
-    className="rounded-xl border border-white/14 bg-gradient-to-b from-white/[0.12] to-white/[0.05]
+            <button
+              onClick={logout}
+              className="rounded-xl border border-white/14 bg-gradient-to-b from-white/[0.12] to-white/[0.05]
                backdrop-blur-2xl px-4 py-2 text-sm font-semibold text-white/90
                hover:from-white/[0.16] hover:to-white/[0.07] transition"
-  >
-    Logout
-  </button>
-</div>
+            >
+              Logout
+            </button>
+          </div>
 
-{/* Mobile hamburger */}
-<div ref={menuRef} className="sm:hidden relative">
-
-<div className="sm:hidden relative">
-  <button
-    onClick={() => setMobileMenuOpen((v) => !v)}
-    className="h-10 w-10 rounded-xl border border-white/14 bg-white/[0.10]
+          {/* Mobile hamburger */}
+          <div ref={menuRef} className="sm:hidden relative">
+            <div className="sm:hidden relative">
+              <button
+                onClick={() => setMobileMenuOpen((v) => !v)}
+                className="h-10 w-10 rounded-xl border border-white/14 bg-white/[0.10]
                flex items-center justify-center text-white text-lg"
-    aria-label="Open menu"
-  >
-    ☰
-  </button>
+                aria-label="Open menu"
+              >
+                ☰
+              </button>
 
-  {mobileMenuOpen && (
-    <div
-      className="absolute right-0 mt-2 w-40 rounded-xl border border-white/14
+              {mobileMenuOpen && (
+                <div
+                  className="absolute right-0 mt-2 w-40 rounded-xl border border-white/14
                  bg-[#0b0c24]/90 backdrop-blur-xl shadow-xl z-50"
-    >
-      <Link
-        to="/habits"
-        onClick={() => setMobileMenuOpen(false)}
-        className="block px-4 py-3 text-sm text-white/90 hover:bg-white/[0.08]"
-      >
-        Habits
-      </Link>
-      <Link
-        to="/history"
-        onClick={() => setMobileMenuOpen(false)}
-        className="block px-4 py-3 text-sm text-white/90 hover:bg-white/[0.08]"
-      >
-        History
-      </Link>
-      <button
-        onClick={() => {
-          setMobileMenuOpen(false);
-          logout();
-        }}
-        className="w-full text-left px-4 py-3 text-sm text-white/90 hover:bg-white/[0.08]"
-      >
-        Logout
-      </button>
-    </div>
-  )}
-</div>
-</div>
+                >
+                  <Link
+                    to="/habits"
+                    onClick={() => setMobileMenuOpen(false)}
+                    className="block px-4 py-3 text-sm text-white/90 hover:bg-white/[0.08]"
+                  >
+                    Habits
+                  </Link>
+                  <Link
+                    to="/history"
+                    onClick={() => setMobileMenuOpen(false)}
+                    className="block px-4 py-3 text-sm text-white/90 hover:bg-white/[0.08]"
+                  >
+                    History
+                  </Link>
+                  <button
+                    onClick={() => {
+                      setMobileMenuOpen(false);
+                      logout();
+                    }}
+                    className="w-full text-left px-4 py-3 text-sm text-white/90 hover:bg-white/[0.08]"
+                  >
+                    Logout
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
         </div>
-
 
         {/* Top grid */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 sm:gap-5">
           <div className="lg:col-span-2">
-            <DarkCard
-              title="Today"
-              subtitle={`Due habits for ${dateKey}`}
-            >
+            <DarkCard title="Today" subtitle={`Due habits for ${dateKey}`}>
               {/* Today summary (UI only) */}
               {!loading && todayDueCount > 0 && (
                 <>
@@ -1081,10 +1253,7 @@ useEffect(() => {
                   {/* Progress bar */}
                   <div className="mb-4">
                     <div className="h-2 w-full overflow-hidden rounded-full border border-white/14 bg-black/20">
-                      <div
-                        className="h-full bg-white/35"
-                        style={{ width: `${todayRatePct}%` }}
-                      />
+                      <div className="h-full bg-white/35" style={{ width: `${todayRatePct}%` }} />
                     </div>
                     <div className="mt-1 text-[11px] text-white/45">
                       {todayDoneCount} of {todayDueCount} done
@@ -1093,10 +1262,8 @@ useEffect(() => {
                 </>
               )}
 
-
               {loading ? (
-                <div className="text-sm text-white/70">
-                  Loading…</div>
+                <div className="text-sm text-white/70">Loading…</div>
               ) : dueItems.length === 0 ? (
                 <div className="rounded-xl border border-dashed border-white/16 bg-black/10 px-4 py-5">
                   <p className="text-sm text-white/70">No habits due today.</p>
@@ -1108,8 +1275,11 @@ useEffect(() => {
                     const isBusy = busyId === h.id;
                     const streak = streakByHabitId[h.id] ?? 0;
 
-                    const remOn = Boolean(h.reminderEnabled) && isValidHHMM(h.reminderTime);
-                    const remTime = String(h.reminderTime ?? "");
+                    // Support both reminder shapes for the pill (UI unchanged)
+                    const newOn = h?.reminders?.enabled === true && isValidHHMM(h?.reminders?.time);
+                    const legacyOn = Boolean(h?.reminderEnabled) && isValidHHMM(h?.reminderTime);
+                    const remOn = newOn || legacyOn;
+                    const remTime = remOn ? String(h?.reminders?.time ?? h?.reminderTime ?? "") : "";
 
                     return (
                       <div
@@ -1130,16 +1300,16 @@ useEffect(() => {
                           <div className="mt-1 flex items-center gap-2 text-xs">
                             <span
                               className={
-                              h.done
-                               ? "inline-flex items-center gap-1 rounded-full border border-emerald-300/25 bg-emerald-500/10 px-2 py-0.5 text-emerald-200"
-                                : "inline-flex items-center gap-1 rounded-full border border-white/14 bg-white/[0.06] px-2 py-0.5 text-white/65"
-                             }
+                                h.done
+                                  ? "inline-flex items-center gap-1 rounded-full border border-emerald-300/25 bg-emerald-500/10 px-2 py-0.5 text-emerald-200"
+                                  : "inline-flex items-center gap-1 rounded-full border border-white/14 bg-white/[0.06] px-2 py-0.5 text-white/65"
+                              }
                             >
-                            {h.done ? "Done" : "Not done"}
+                              {h.done ? "Done" : "Not done"}
                             </span>
-                              {h.done ? <span className="text-white/45">✅</span> : null}
-                            </div>
+                            {h.done ? <span className="text-white/45">✅</span> : null}
                           </div>
+                        </div>
 
                         <button
                           disabled={isBusy}
@@ -1173,7 +1343,7 @@ useEffect(() => {
                   { label: "Active habits", value: String(items.length) },
                   { label: "Due today", value: String(dueItems.length) },
                   { label: "Today done", value: String(dueItems.filter((x: any) => x.done).length) },
-                  { label: "Next reminder", value: nextReminderHM ?? "—" },
+                  { label: "Next reminder", value: nextReminder.kind === "ok" ? nextReminder.label : "No specific reminder" },
                   { label: "7d consistency", value: insightsLoading ? "…" : consistency7d },
                   {
                     label: "Best streak",
@@ -1228,10 +1398,7 @@ useEffect(() => {
             </div>
           </DarkCard>
 
-          <DarkCard
-            title="Next up"
-            subtitle="Roadmap for the next build steps."
-          >
+          <DarkCard title="Next up" subtitle="Roadmap for the next build steps.">
             <div className="space-y-3">
               {[
                 { title: "1) Habit CRUD", desc: "Create, edit, archive habits." },
@@ -1251,23 +1418,14 @@ useEffect(() => {
           </DarkCard>
         </div>
 
-        <div className="mt-4 text-center text-xs text-white/90">
-          Tip: Install the app on your phone for the best reminder experience.
-        </div>
+        <div className="mt-4 text-center text-xs text-white/90">Tip: Install the app on your phone for the best reminder experience.</div>
 
-        <div className="mt-4 text-center text-xs text-white/90">
-          
-        </div>
+        <div className="mt-4 text-center text-xs text-white/90"></div>
 
         {/* TOP: Notifications */}
-        <DarkCard
-          title="Notifications"
-
-        >
+        <DarkCard title="Notifications">
           {/* Status pills */}
-          <div className="flex items-center gap-2 flex-wrap">
-
-          </div>
+          <div className="flex items-center gap-2 flex-wrap"></div>
 
           {/* Primary action buttons */}
           <div className="mt-4 flex flex-col sm:flex-row sm:items-center gap-3">
@@ -1281,38 +1439,37 @@ useEffect(() => {
               aria-label="Toggle global reminders"
               title="Turns ALL notifications on/off (exact reminders + daily digest)"
             >
-            <span
-              className={`absolute left-1 top-1 h-6 w-6 rounded-full transition-transform
+              <span
+                className={`absolute left-1 top-1 h-6 w-6 rounded-full transition-transform
                 ${globalEnabled ? "translate-x-[128px] bg-white/80" : "translate-x-0 bg-white/55"}`}
-            />
-            <span className="w-full text-center text-[10px] font-semibold text-white/85">
-              {globalUi.status === "working" ? "Saving…" : globalEnabled ? "Reminders ON" : "Reminders OFF"}
-            </span>
-          </button>
+              />
+              <span className="w-full text-center text-[10px] font-semibold text-white/85">
+                {globalUi.status === "working" ? "Saving…" : globalEnabled ? "Reminders ON" : "Reminders OFF"}
+              </span>
+            </button>
 
-<button
-  type="button"
-  onClick={enableNotificationsClick}
-  disabled={pushButtonDisabled}
-  className={`relative inline-flex h-8 w-40 items-center rounded-full border transition overflow-hidden
+            <button
+              type="button"
+              onClick={enableNotificationsClick}
+              disabled={pushButtonDisabled}
+              className={`relative inline-flex h-8 w-40 items-center rounded-full border transition overflow-hidden
     ${
       notifStatus === "granted"
         ? "border-white/20 bg-white/[0.16]"
         : "border-white/14 bg-white/[0.08] hover:bg-white/[0.12]"
     }
     disabled:opacity-60`}
-  aria-label="Enable notifications"
-  title={!notifSupported ? "Notifications unsupported" : undefined}
->
-  <span
-    className={`absolute left-1 top-1 h-6 w-6 rounded-full transition-transform
+              aria-label="Enable notifications"
+              title={!notifSupported ? "Notifications unsupported" : undefined}
+            >
+              <span
+                className={`absolute left-1 top-1 h-6 w-6 rounded-full transition-transform
       ${notifStatus === "granted" ? "translate-x-[128px] bg-white/80" : "translate-x-0 bg-white/55"}`}
-  />
-  <span className="w-full text-center text-[10px] font-semibold text-white/85">
-    {pushUi.status === "working" ? "…" : `Push ${permissionLabel(notifStatus)}`}
-  </span>
-</button>
-
+              />
+              <span className="w-full text-center text-[10px] font-semibold text-white/85">
+                {pushUi.status === "working" ? "…" : `Push ${permissionLabel(notifStatus)}`}
+              </span>
+            </button>
           </div>
 
           {/* Timezone controls */}
@@ -1482,33 +1639,30 @@ useEffect(() => {
               </div>
 
               <button
-  type="button"
-  onClick={() => {
-    const next = !quietEnabled;
-    setQuietEnabled(next);
-    setQuietDirty(true);
-    setQuietUi({ status: "idle" });
-  }}
-  disabled={!uid || quietUi.status === "working"}
-  className={`relative inline-flex h-8 w-28 items-center rounded-full border transition overflow-hidden
+                type="button"
+                onClick={() => {
+                  const next = !quietEnabled;
+                  setQuietEnabled(next);
+                  setQuietDirty(true);
+                  setQuietUi({ status: "idle" });
+                }}
+                disabled={!uid || quietUi.status === "working"}
+                className={`relative inline-flex h-8 w-28 items-center rounded-full border transition overflow-hidden
     ${
-      quietEnabled
-        ? "border-white/20 bg-white/[0.16]"
-        : "border-white/14 bg-white/[0.08] hover:bg-white/[0.12]"
+      quietEnabled ? "border-white/20 bg-white/[0.16]" : "border-white/14 bg-white/[0.08] hover:bg-white/[0.12]"
     }
     disabled:opacity-60`}
-  aria-label="Toggle quiet hours"
-  title="Pauses all reminders during the quiet window"
->
-  <span
-    className={`absolute left-1 top-1 h-6 w-6 rounded-full transition-transform
+                aria-label="Toggle quiet hours"
+                title="Pauses all reminders during the quiet window"
+              >
+                <span
+                  className={`absolute left-1 top-1 h-6 w-6 rounded-full transition-transform
       ${quietEnabled ? "translate-x-[80px] bg-white/80" : "translate-x-0 bg-white/55"}`}
-  />
-  <span className="w-full text-center text-[10px] font-semibold text-white/85">
-    {quietEnabled ? "Quiet ON" : "Quiet OFF"}
-  </span>
-</button>
-
+                />
+                <span className="w-full text-center text-[10px] font-semibold text-white/85">
+                  {quietEnabled ? "Quiet ON" : "Quiet OFF"}
+                </span>
+              </button>
             </div>
 
             <div className="mt-3 flex flex-col sm:flex-row sm:items-end gap-3">
@@ -1601,12 +1755,13 @@ useEffect(() => {
           <div className="mt-2 text-[11px] text-white/45">
             Exact reminders: sent at each habit’s time (if enabled). Daily digest:{" "}
             <span className="text-white/70">16:00</span> (only if you have ≥1 due habit).
-            {nextReminderHM ? (
-              <span className="text-white/60">
-                {" "}
-                • Next reminder today: <span className="text-white/80">{nextReminderHM}</span>
+            <span className="text-white/60">
+              {" "}
+              • Next scheduled reminder:{" "}
+              <span className="text-white/80">
+                {nextReminder.kind === "ok" ? nextReminder.label : "No specific reminder"}
               </span>
-            ) : null}
+            </span>
           </div>
 
           {/* Inline messages */}
@@ -1658,12 +1813,45 @@ useEffect(() => {
         ) : (
           <div className="mt-5" />
         )}
-
       </div>
+
     </Scene>
+
+    <InstallPromptModal
+      open={installOpen}
+      device={install.device}
+      mode={install.mode}
+      method={install.method}
+      installing={installing}
+      onClose={() => {
+        console.log("[InstallUI] onClose");
+        setInstallOpen(false);
+        install.dismiss(); // keep your current behavior for now
+      }}
+      onInstall={
+        install.canPromptNative
+          ? async () => {
+              console.log("[InstallUI] onInstall click");
+              setInstalling(true);
+              const res = await install.promptInstall();
+              setInstalling(false);
+
+              console.log("[InstallUI] promptInstall result:", res);
+
+              if (res !== "accepted") {
+                install.dismiss();
+              }
+              setInstallOpen(false);
+            }
+          : undefined
+      }
+    />
+
+
+</>
   );
 }
 
 // ==========================
-// End of Version 25 — src/pages/Dashboard.tsx
+// End of Version 27 — src/pages/Dashboard.tsx
 // ==========================

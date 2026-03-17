@@ -1,12 +1,9 @@
 // ==========================
-// Version 6 — src/utils/push.ts
-// - v5 + production hardening + better error visibility
-//   * Validates Firebase app config at runtime (apiKey/appId/senderId)
-//   * Validates VAPID key presence + basic format check
-//   * Wraps getToken in try/catch and returns actionable reasons
-//   * Adds safe debug logging (no secrets) for prod troubleshooting
-// - Keeps token lifecycle logic the same
-// - Keeps callable sendTestPush helper (auth required)
+// Version 7 - src/utils/push.ts
+// - Keeps push registration across normal logout/login
+// - Adds silent restore for already-granted permission
+// - Rebinds the saved device token when switching accounts
+// - Keeps test-push callable helper
 // ==========================
 import { getMessaging, getToken, deleteToken, isSupported } from "firebase/messaging";
 import { httpsCallable } from "firebase/functions";
@@ -15,27 +12,33 @@ import { upsertPushToken, removePushToken } from "../firebase/pushTokens";
 
 const VAPID_KEY = import.meta.env.VITE_FIREBASE_VAPID_KEY as string | undefined;
 
-const LS_PREFIX = "bah:lastPushToken";
+const LS_TOKEN_KEY = "bah:lastPushToken";
+const LS_UID_KEY = "bah:lastPushUid";
 
-function lsKey(uid: string) {
-  return `${LS_PREFIX}:${uid}`;
-}
-
-function readLastToken(uid: string): string | null {
+function readLastRegistration(): { uid: string | null; token: string | null } {
   try {
-    if (typeof window === "undefined") return null;
-    return localStorage.getItem(lsKey(uid));
+    if (typeof window === "undefined") return { uid: null, token: null };
+    return {
+      uid: localStorage.getItem(LS_UID_KEY),
+      token: localStorage.getItem(LS_TOKEN_KEY),
+    };
   } catch {
-    return null;
+    return { uid: null, token: null };
   }
 }
 
-function writeLastToken(uid: string, token: string | null) {
+function writeLastRegistration(uid: string | null, token: string | null) {
   try {
     if (typeof window === "undefined") return;
-    const k = lsKey(uid);
-    if (!token) localStorage.removeItem(k);
-    else localStorage.setItem(k, token);
+
+    if (!uid || !token) {
+      localStorage.removeItem(LS_UID_KEY);
+      localStorage.removeItem(LS_TOKEN_KEY);
+      return;
+    }
+
+    localStorage.setItem(LS_UID_KEY, uid);
+    localStorage.setItem(LS_TOKEN_KEY, token);
   } catch {
     // ignore
   }
@@ -44,13 +47,11 @@ function writeLastToken(uid: string, token: string | null) {
 async function getActiveServiceWorkerRegistration() {
   if (typeof window === "undefined") return null;
   if (!("serviceWorker" in navigator)) return null;
-
   const reg = await navigator.serviceWorker.ready.catch(() => null);
   return reg;
 }
 
 function getFirebaseOptionsSafe() {
-  // firebase/app exposes options on the app object (type is not public on all builds)
   const opts = (app as any)?.options ?? {};
   return {
     projectId: opts.projectId ? String(opts.projectId) : "",
@@ -61,8 +62,6 @@ function getFirebaseOptionsSafe() {
 }
 
 function isVapidKeyLikelyValid(k: string) {
-  // VAPID public keys are typically ~87-88 chars base64url
-  // We won’t over-validate, just catch obvious bad values.
   const s = String(k || "").trim();
   return s.length >= 50 && !s.includes(" ") && !s.includes("\n");
 }
@@ -71,7 +70,6 @@ function errorToReason(e: any): string {
   const code = e?.code ? String(e.code) : "";
   const msg = e?.message ? String(e.message) : "";
 
-  // Firebase Messaging common errors
   if (code.includes("messaging/permission-blocked") || msg.toLowerCase().includes("permission")) {
     return "permission-blocked";
   }
@@ -87,7 +85,7 @@ function errorToReason(e: any): string {
   return code || msg || "unknown-error";
 }
 
-type EnablePushResult =
+export type EnablePushResult =
   | { ok: true; token: string; changed: boolean; created: boolean }
   | {
       ok: false;
@@ -105,7 +103,7 @@ type EnablePushResult =
       detail?: string;
     };
 
-export async function enablePushForUser(uid: string): Promise<EnablePushResult> {
+async function resolveTokenForUser(uid: string, requestPermission: boolean): Promise<EnablePushResult> {
   if (!uid) throw new Error("Missing uid");
 
   if (typeof window === "undefined") {
@@ -121,7 +119,7 @@ export async function enablePushForUser(uid: string): Promise<EnablePushResult> 
     return { ok: false, reason: "notifications-not-supported" };
   }
 
-  const perm = await Notification.requestPermission();
+  const perm = requestPermission ? await Notification.requestPermission() : Notification.permission;
   if (perm !== "granted") {
     return { ok: false, reason: "permission-not-granted" };
   }
@@ -133,7 +131,6 @@ export async function enablePushForUser(uid: string): Promise<EnablePushResult> 
     return { ok: false, reason: "invalid-vapid-key" };
   }
 
-  // ✅ Runtime config validation (most common prod mistake: missing envs in build)
   const opts = getFirebaseOptionsSafe();
   if (!opts.apiKeyPresent || !opts.appId || !opts.messagingSenderIdPresent || !opts.projectId) {
     console.error("[push] Missing Firebase config at runtime:", {
@@ -158,8 +155,6 @@ export async function enablePushForUser(uid: string): Promise<EnablePushResult> 
     });
   } catch (e: any) {
     const detail = errorToReason(e);
-
-    // Helpful console breadcrumb (no secrets)
     console.error("[push] getToken failed:", {
       detail,
       origin: window.location.origin,
@@ -168,7 +163,6 @@ export async function enablePushForUser(uid: string): Promise<EnablePushResult> 
       apiKeyPresent: opts.apiKeyPresent,
       senderIdPresent: opts.messagingSenderIdPresent,
     });
-
     return { ok: false, reason: "get-token-failed", detail };
   }
 
@@ -176,32 +170,36 @@ export async function enablePushForUser(uid: string): Promise<EnablePushResult> 
     return { ok: false, reason: "no-token" };
   }
 
-  const prev = readLastToken(uid);
+  const prev = readLastRegistration();
 
-  // If token rotated, remove old doc best-effort
-  if (prev && prev !== token) {
+  if (prev.uid && prev.token && (prev.uid !== uid || prev.token !== token)) {
     try {
-      await removePushToken(db, uid, prev);
+      await removePushToken(db, prev.uid, prev.token);
     } catch {
       // ignore
     }
   }
 
-  // Save only when new or changed (or missing local record)
-  if (!prev || prev !== token) {
+  if (!prev.uid || !prev.token || prev.uid !== uid || prev.token !== token) {
     const { created } = await upsertPushToken(db, uid, token);
-    writeLastToken(uid, token);
-
+    writeLastRegistration(uid, token);
     return {
       ok: true,
       token,
-      changed: Boolean(prev && prev !== token),
+      changed: Boolean(prev.uid || prev.token),
       created,
     };
   }
 
-  // Token same as last time; nothing to write
   return { ok: true, token, changed: false, created: false };
+}
+
+export async function enablePushForUser(uid: string): Promise<EnablePushResult> {
+  return resolveTokenForUser(uid, true);
+}
+
+export async function restorePushForUser(uid: string): Promise<EnablePushResult> {
+  return resolveTokenForUser(uid, false);
 }
 
 type DisablePushResult =
@@ -217,15 +215,15 @@ export async function disablePushForUser(uid: string): Promise<DisablePushResult
 
   const supported = await isSupported().catch(() => false);
   if (!supported) {
-    writeLastToken(uid, null);
+    writeLastRegistration(null, null);
     return { ok: false, reason: "messaging-not-supported" };
   }
 
-  const last = readLastToken(uid);
+  const last = readLastRegistration();
 
-  if (last) {
+  if (last.uid === uid && last.token) {
     try {
-      await removePushToken(db, uid, last);
+      await removePushToken(db, uid, last.token);
     } catch {
       // ignore
     }
@@ -234,7 +232,7 @@ export async function disablePushForUser(uid: string): Promise<DisablePushResult
   try {
     const swReg = await getActiveServiceWorkerRegistration();
     if (!swReg) {
-      writeLastToken(uid, null);
+      writeLastRegistration(null, null);
       return { ok: false, reason: "no-service-worker" };
     }
 
@@ -244,7 +242,7 @@ export async function disablePushForUser(uid: string): Promise<DisablePushResult
     // ignore
   }
 
-  writeLastToken(uid, null);
+  writeLastRegistration(null, null);
   return { ok: true };
 }
 
@@ -275,5 +273,5 @@ export async function sendTestPush(): Promise<TestPushResult> {
 }
 
 // ==========================
-// End of Version 6 — src/utils/push.ts
+// End of Version 7 - src/utils/push.ts
 // ==========================

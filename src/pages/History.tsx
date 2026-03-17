@@ -286,7 +286,7 @@ export default function History() {
   const nav = useNavigate();
 
   // Window-based stats (unchanged for now)
-  const [rangeDays, setRangeDays] = useState<7 | 30 | 90>(30);
+  const [rangeDays] = useState<7 | 30 | 90>(30);
 
   const [heatMode, setHeatMode] = useState<HeatMode>("overall");
   const [selectedHabitId, setSelectedHabitId] = useState<string>("");

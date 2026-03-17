@@ -20,7 +20,6 @@ import {
   getIdTokenResult,
 } from "firebase/auth";
 import { auth, db } from "../firebase/client";
-import { disablePushForUser } from "../utils/push";
 import { ensureUserDoc } from "../firebase/users";
 
 type AuthContextValue = {
@@ -206,14 +205,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       },
 
       logout: async () => {
-        const uid = user?.uid ?? null;
-        if (uid) {
-          try {
-            await disablePushForUser(uid);
-          } catch {
-            // ignore
-          }
-        }
         await signOut(auth);
         setIsAdmin(false);
       },

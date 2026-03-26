@@ -42,7 +42,7 @@ function toIsoOrNull(d: any): string | null {
 // ---------------------
 // Admin: who am I?
 // ---------------------
-export const adminWhoAmI = onCall({ region: "europe-west2" }, async (req) => {
+export const adminWhoAmI = onCall({ region: "europe-west2", enforceAppCheck: true }, async (req) => {
   const uid = assertAuthed(req);
   assertAdmin(req);
 
@@ -54,7 +54,7 @@ export const adminWhoAmI = onCall({ region: "europe-west2" }, async (req) => {
 // ---------------------
 // Admin: grant/revoke admin
 // ---------------------
-export const adminSetAdmin = onCall({ region: "europe-west2" }, async (req) => {
+export const adminSetAdmin = onCall({ region: "europe-west2", enforceAppCheck: true }, async (req) => {
   const callerUid = assertAuthed(req);
   assertAdmin(req);
 
@@ -81,7 +81,7 @@ export const adminSetAdmin = onCall({ region: "europe-west2" }, async (req) => {
 // ---------------------
 // Admin: list users
 // ---------------------
-export const adminListUsers = onCall({ region: "europe-west2" }, async (req) => {
+export const adminListUsers = onCall({ region: "europe-west2", enforceAppCheck: true }, async (req) => {
   assertAuthed(req);
   assertAdmin(req);
 
@@ -104,7 +104,7 @@ export const adminListUsers = onCall({ region: "europe-west2" }, async (req) => 
 // ---------------------
 // Admin: per-user summary
 // ---------------------
-export const adminUserSummary = onCall({ region: "europe-west2" }, async (req) => {
+export const adminUserSummary = onCall({ region: "europe-west2", enforceAppCheck: true }, async (req) => {
   assertAuthed(req);
   assertAdmin(req);
 
@@ -137,7 +137,7 @@ export const adminUserSummary = onCall({ region: "europe-west2" }, async (req) =
 // ---------------------
 // Admin: reminder logs
 // ---------------------
-export const adminReminderLogs = onCall({ region: "europe-west2" }, async (req) => {
+export const adminReminderLogs = onCall({ region: "europe-west2", enforceAppCheck: true }, async (req) => {
   assertAuthed(req);
   assertAdmin(req);
 

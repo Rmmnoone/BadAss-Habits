@@ -239,7 +239,7 @@ export const tickReminders = onSchedule(
 // Callable: Test push
 // =====================
 export const sendTestPush = onCall(
-  { region: "europe-west2" },
+  { region: "europe-west2", enforceAppCheck: true },
   async (req) => {
     const uid = req.auth?.uid;
     if (!uid) throw new HttpsError("unauthenticated", "Sign in required.");

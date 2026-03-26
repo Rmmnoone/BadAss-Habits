@@ -1,6 +1,6 @@
 // ==========================
-// Version 6 — src/components/AuthLayout.tsx
-// - v5 + cleanup (deduped; no behavior change)
+// Version 10 — src/components/AuthLayout.tsx
+// - v9 + centered auth header stack (logo, link, tagline)
 // - Uses shared <Scene/> for consistent background
 // ==========================
 import React from "react";
@@ -21,25 +21,34 @@ export default function AuthLayout({ title, subtitle, children, topRightLink }: 
       contentClassName="relative min-h-screen flex items-center justify-center p-4"
     >
       <div className="w-full max-w-md">
-        <div className="flex items-center justify-between mb-4">
-          <div
-            className="inline-flex items-center gap-2 rounded-full border border-white/14
-                       bg-white/[0.07] px-3 py-1 text-xs backdrop-blur-2xl text-white/80"
-          >
-            <span className="h-2 w-2 rounded-full bg-emerald-400" />
-            BadAss Habits
+        <div className="mb-4 flex flex-col items-center text-center">
+          <div className="min-w-0">
+            <img
+              src="/logo-badasshabits.png"
+              alt="BadAss Habits"
+              className="mx-auto w-auto max-w-full object-contain
+                         drop-shadow-[0_14px_28px_rgba(190,242,100,0.18)]"
+            />
           </div>
 
           {topRightLink ? (
             <Link
               to={topRightLink.to}
-              className="text-xs font-medium text-white/70 hover:text-white underline-offset-4 hover:underline"
+              className="mt-3 text-xs font-medium text-white/70 hover:text-white underline-offset-4 hover:underline"
             >
               {topRightLink.label}
             </Link>
           ) : (
             <span />
           )}
+
+          <div
+            className="mt-3 inline-flex items-center rounded-full border border-lime-300/20
+                       bg-lime-400/10 px-3 py-1 text-[10px] font-semibold uppercase
+                       tracking-[0.24em] text-lime-200/90 backdrop-blur-2xl"
+          >
+            Track. Build. Repeat.
+          </div>
         </div>
 
         <div className="relative rounded-2xl overflow-hidden">
@@ -78,5 +87,5 @@ export default function AuthLayout({ title, subtitle, children, topRightLink }: 
 }
 
 // ==========================
-// End of Version 6 — src/components/AuthLayout.tsx
+// End of Version 10 — src/components/AuthLayout.tsx
 // ==========================

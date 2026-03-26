@@ -1368,55 +1368,8 @@ installMethod: install.method,
           </div>
         </div>
 
-        {/* Lower grid (keep placeholders) */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-5 mt-4 sm:mt-5">
-          <DarkCard
-            title="Insights"
-            subtitle="Streaks, trends, and history will live here."
-            right={
-              <span className="inline-flex items-center rounded-full border border-white/14 bg-white/[0.07] px-3 py-1 text-xs text-white/75 backdrop-blur-2xl">
-                Analysis
-              </span>
-            }
-          >
-            <div className="rounded-xl border border-dashed border-white/16 bg-black/10 px-4 py-5">
-              <p className="text-sm text-white/70">Next we’ll add:</p>
-              <ul className="mt-3 space-y-2 text-sm text-white/70">
-                <li className="flex gap-3">
-                  <span className="text-white/50">•</span>
-                  <span>Longest streak (true, lifetime) + goals</span>
-                </li>
-                <li className="flex gap-3">
-                  <span className="text-white/50">•</span>
-                  <span>“Missed due days” + recovery suggestions</span>
-                </li>
-                <li className="flex gap-3">
-                  <span className="text-white/50">•</span>
-                  <span>Weekly trend + habit ranking</span>
-                </li>
-              </ul>
-            </div>
-          </DarkCard>
 
-          <DarkCard title="Next up" subtitle="Roadmap for the next build steps.">
-            <div className="space-y-3">
-              {[
-                { title: "1) Habit CRUD", desc: "Create, edit, archive habits." },
-                { title: "2) Schedules per habit", desc: "Daily/weekly + reminders." },
-                { title: "3) Check-ins + streaks", desc: "Daily tracking + history + analysis." },
-              ].map((item) => (
-                <div
-                  key={item.title}
-                  className="rounded-xl border border-white/14 bg-white/[0.07] p-4 backdrop-blur-2xl
-                             shadow-[0_22px_70px_-55px_rgba(0,0,0,0.98)]"
-                >
-                  <div className="text-sm font-semibold text-white">{item.title}</div>
-                  <div className="mt-1 text-sm text-white/60">{item.desc}</div>
-                </div>
-              ))}
-            </div>
-          </DarkCard>
-        </div>
+
 
         <div className="mt-4 text-center text-xs text-white/90">Tip: Install the app on your phone for the best reminder experience.</div>
 

@@ -12,12 +12,14 @@ import {
   onAuthStateChanged,
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
+  sendEmailVerification,
   signOut,
   GoogleAuthProvider,
   signInWithPopup,
   signInWithRedirect,
   getRedirectResult,
   getIdTokenResult,
+  reload,
 } from "firebase/auth";
 import { auth, db } from "../firebase/client";
 import { ensureUserDoc } from "../firebase/users";
@@ -27,7 +29,11 @@ type AuthContextValue = {
   loading: boolean;
 
   isAdmin: boolean;
+  emailVerified: boolean;
+  needsEmailVerification: boolean;
   refreshClaims: () => Promise<void>;
+  refreshUser: () => Promise<void>;
+  sendVerificationEmail: () => Promise<void>;
 
   register: (email: string, password: string) => Promise<void>;
   login: (email: string, password: string) => Promise<void>;
@@ -59,9 +65,15 @@ async function computeIsAdmin(u: User | null): Promise<boolean> {
   }
 }
 
+function hasPasswordProvider(u: User | null): boolean {
+  if (!u) return false;
+  return u.providerData.some((p) => p.providerId === "password");
+}
+
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [isAdmin, setIsAdmin] = useState(false);
+  const [emailVerified, setEmailVerified] = useState(false);
   const [loading, setLoading] = useState(true);
 
   const refreshClaims = async () => {
@@ -77,6 +89,25 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     } catch {
       setIsAdmin(false);
     }
+  };
+
+  const refreshUser = async () => {
+    const u = auth.currentUser;
+    if (!u) {
+      setUser(null);
+      setEmailVerified(false);
+      return;
+    }
+    await reload(u);
+    const refreshed = auth.currentUser;
+    setUser(refreshed);
+    setEmailVerified(Boolean(refreshed?.emailVerified));
+  };
+
+  const sendVerificationEmailNow = async () => {
+    const u = auth.currentUser;
+    if (!u) throw new Error("No signed-in user.");
+    await sendEmailVerification(u);
   };
 
   // Handle redirect results (if popup fails and we fall back)
@@ -115,6 +146,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (u) => {
       setUser(u);
+      setEmailVerified(Boolean(u?.emailVerified));
 
       // compute admin claim
       const adminFlag = await computeIsAdmin(u);
@@ -130,7 +162,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       user,
       loading,
       isAdmin,
+      emailVerified,
+      needsEmailVerification: Boolean(user && hasPasswordProvider(user) && !emailVerified),
       refreshClaims,
+      refreshUser,
+      sendVerificationEmail: sendVerificationEmailNow,
 
       register: async (email, password) => {
         const cred = await createUserWithEmailAndPassword(auth, email, password);
@@ -146,6 +182,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         } catch {
           // ignore
         }
+
+        setEmailVerified(Boolean(cred.user.emailVerified));
+
+        await sendEmailVerification(cred.user);
       },
 
       login: async (email, password) => {
@@ -161,6 +201,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         } catch {
           // ignore
         }
+
+        setEmailVerified(Boolean(cred.user.emailVerified));
       },
 
       loginWithGoogle: async () => {
@@ -180,6 +222,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           } catch {
             // ignore
           }
+
+          setEmailVerified(Boolean(cred.user.emailVerified));
         } catch (e: any) {
           if (isPopupBlockedError(e)) {
             await signInWithRedirect(auth, provider);
@@ -192,9 +236,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       logout: async () => {
         await signOut(auth);
         setIsAdmin(false);
+        setEmailVerified(false);
       },
     }),
-    [user, loading, isAdmin]
+    [user, loading, isAdmin, emailVerified]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

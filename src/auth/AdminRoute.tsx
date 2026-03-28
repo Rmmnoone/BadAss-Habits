@@ -9,7 +9,7 @@ import { Navigate } from "react-router-dom";
 import { useAuth } from "./AuthProvider";
 
 export default function AdminRoute({ children }: { children: React.ReactNode }) {
-  const { user, loading, isAdmin } = useAuth();
+  const { user, loading, isAdmin, needsEmailVerification } = useAuth();
 
   if (loading) {
     return (
@@ -20,6 +20,7 @@ export default function AdminRoute({ children }: { children: React.ReactNode }) 
   }
 
   if (!user) return <Navigate to="/login" replace />;
+  if (needsEmailVerification) return <Navigate to="/verify-email" replace />;
   if (!isAdmin) return <Navigate to="/" replace />;
 
   return <>{children}</>;

@@ -93,10 +93,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           // Best-effort user doc
           try {
             await ensureUserDoc(db, u.uid, u.email);
-          } catch (e) {
-            // eslint-disable-next-line no-console
-            console.log("[AuthProvider] ensureUserDoc(google redirect) failed (ignored):", e);
-          }
+          } catch {}
 
           // Best-effort claim read
           try {
@@ -106,10 +103,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             // ignore
           }
         }
-      } catch (e) {
-        // eslint-disable-next-line no-console
-        console.log("[AuthProvider] getRedirectResult failed (ignored):", e);
-      }
+      } catch {}
     }
 
     run();
@@ -143,10 +137,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
         try {
           await ensureUserDoc(db, cred.user.uid, cred.user.email);
-        } catch (e) {
-          // eslint-disable-next-line no-console
-          console.log("[AuthProvider] ensureUserDoc(register) failed (ignored):", e);
-        }
+        } catch {}
 
         // claims likely not set yet, but keep behavior consistent
         try {
@@ -162,10 +153,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
         try {
           await ensureUserDoc(db, cred.user.uid, cred.user.email);
-        } catch (e) {
-          // eslint-disable-next-line no-console
-          console.log("[AuthProvider] ensureUserDoc(login) failed (ignored):", e);
-        }
+        } catch {}
 
         try {
           const adminFlag = await computeIsAdmin(cred.user);
@@ -184,10 +172,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
           try {
             await ensureUserDoc(db, cred.user.uid, cred.user.email);
-          } catch (e) {
-            // eslint-disable-next-line no-console
-            console.log("[AuthProvider] ensureUserDoc(google popup) failed (ignored):", e);
-          }
+          } catch {}
 
           try {
             const adminFlag = await computeIsAdmin(cred.user);

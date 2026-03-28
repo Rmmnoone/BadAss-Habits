@@ -48,7 +48,6 @@ export function useInstallPrompt(): InstallPromptState {
     if (typeof window === "undefined") return;
 
     function onBeforeInstallPrompt(ev: Event) {
-      console.log("[Install] beforeinstallprompt fired");
       (ev as any).preventDefault?.();
       setBipEvent(ev as BIPEvent);
     }

@@ -1,10 +1,6 @@
 // ==========================
-// Version 6 — src/sw.ts
-// - v5 + notification delivery diagnostics
-//   * Logs permission + showNotification success/failure
-//   * Handles DevTools "Push" (plain text) by showing it in body
-//   * Adds default body if empty, so you can visually confirm it showed
-//   * Adds notificationclose logging
+// Version 7 — src/sw.ts
+// - Removes temporary notification delivery diagnostics
 // - Keeps Workbox InjectManifest precache
 // ==========================
 
@@ -79,12 +75,6 @@ self.addEventListener("push", (event) => {
       }
     }
 
-    // eslint-disable-next-line no-console
-    console.log("[SW] push received", payload);
-
-    // eslint-disable-next-line no-console
-    console.log("[SW] notification permission (best-effort)", (self as any)?.Notification?.permission);
-
     const { title, body, url, tag, renotify, requireInteraction, actions } = pickPayload(payload, rawText);
 
     const opts: any = {
@@ -106,12 +96,7 @@ self.addEventListener("push", (event) => {
 
     try {
       await self.registration.showNotification(title, opts);
-      // eslint-disable-next-line no-console
-      console.log("[SW] showNotification OK", { title, body, tag: opts.tag, url });
-    } catch (err) {
-      // eslint-disable-next-line no-console
-      console.error("[SW] showNotification FAILED", err, { title, body, tag: opts.tag, url });
-    }
+    } catch {}
   };
 
   event.waitUntil(show());
@@ -148,14 +133,6 @@ self.addEventListener("notificationclick", (event) => {
   );
 });
 
-self.addEventListener("notificationclose", (event) => {
-  // eslint-disable-next-line no-console
-  console.log("[SW] notification closed", {
-    title: event.notification?.title,
-    data: (event.notification as any)?.data,
-  });
-});
-
 // ==========================
-// End of Version 6 — src/sw.ts
+// End of Version 7 — src/sw.ts
 // ==========================

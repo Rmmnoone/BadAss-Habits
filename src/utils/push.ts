@@ -133,10 +133,6 @@ async function resolveTokenForUser(uid: string, requestPermission: boolean): Pro
 
   const opts = getFirebaseOptionsSafe();
   if (!opts.apiKeyPresent || !opts.appId || !opts.messagingSenderIdPresent || !opts.projectId) {
-    console.error("[push] Missing Firebase config at runtime:", {
-      ...opts,
-      origin: window.location.origin,
-    });
     return { ok: false, reason: "missing-firebase-config" };
   }
 
@@ -155,14 +151,6 @@ async function resolveTokenForUser(uid: string, requestPermission: boolean): Pro
     });
   } catch (e: any) {
     const detail = errorToReason(e);
-    console.error("[push] getToken failed:", {
-      detail,
-      origin: window.location.origin,
-      projectId: opts.projectId,
-      appIdPresent: Boolean(opts.appId),
-      apiKeyPresent: opts.apiKeyPresent,
-      senderIdPresent: opts.messagingSenderIdPresent,
-    });
     return { ok: false, reason: "get-token-failed", detail };
   }
 

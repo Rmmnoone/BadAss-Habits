@@ -30,16 +30,6 @@ export const appCheck =
       })
     : null;
 
-if (typeof window !== "undefined" && window.location.hostname === "localhost") {
-  console.info("[Firebase] init", {
-    projectId: firebaseConfig.projectId,
-    appId: firebaseConfig.appId,
-    hasAppCheckSiteKey: Boolean(appCheckSiteKey),
-    appCheckInitialized: Boolean(appCheck),
-    mode: import.meta.env.MODE,
-  });
-}
-
 export const auth = getAuth(app);
 export const db = getFirestore(app);
 

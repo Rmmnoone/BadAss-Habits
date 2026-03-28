@@ -7,7 +7,7 @@
 // - Today list reminder pill now supports both new + legacy reminder shapes (UI unchanged)
 // ==========================
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { Link, useLocation } from "react-router-dom";
+import { Link } from "react-router-dom";
 import { useAuth } from "../auth/AuthProvider";
 import Scene from "../components/Scene";
 import { db } from "../firebase/client";
@@ -20,7 +20,6 @@ import { useReminderScheduler } from "../hooks/useReminderScheduler";
 import { enablePushForUser, restorePushForUser } from "../utils/push";
 import { ensureUserDoc, setUserRemindersEnabled, setUserQuietHours, setUserTimezone } from "../firebase/users";
 import { collection, getCountFromServer, getDoc, doc, query, orderBy, limit, getDocs } from "firebase/firestore";
-import { useDevice } from "../hooks/useDevice";
 import InstallPromptModal from "../components/InstallPromptModal";
 import { useInstallPrompt } from "../hooks/useInstallPrompt";
 
@@ -355,9 +354,6 @@ export default function Dashboard() {
   const { user, logout } = useAuth();
   const uid = user?.uid ?? null;
 
-  const loc = useLocation();
-  const debugOn = useMemo(() => new URLSearchParams(loc.search).get("debug") === "1", [loc.search]);
-
   const [userTz, setUserTz] = useState<string>("Europe/London");
   const { dateKey, dueItems, items, loading } = useToday(uid, userTz);
   const { active: activeHabits, loading: habitsLoading } = useHabits(uid);
@@ -436,51 +432,20 @@ export default function Dashboard() {
   const [tzDirty, setTzDirty] = useState<boolean>(false);
   const [tzUi, setTzUi] = useState<TzUiState>({ status: "idle" });
 
-  const [debugSnap, setDebugSnap] = useState<Record<string, any>>({});
-
-
   const install = useInstallPrompt();
   const [installOpen, setInstallOpen] = useState(false);
   const [installing, setInstalling] = useState(false);
 
-useEffect(() => {
-  if (!uid) return;
+  useEffect(() => {
+    if (!uid) return;
+    if (install.isInstalled || install.isDismissed) return;
 
-  const snap = {
-    uidPresent: Boolean(uid),
-    isInstalled: install.isInstalled,
-    isDismissed: install.isDismissed,
-    mode: install.mode,
-    method: install.method,
-    canPromptNative: install.canPromptNative,
-    shouldShowIosHowTo: install.shouldShowIosHowTo,
-    os: install.device.os,
-    browser: install.device.browser,
-    desktopPlatform: install.device.desktopPlatform,
-    standalone: install.device.isStandalone,
-  };
+    const t = window.setTimeout(() => {
+      setInstallOpen(true);
+    }, 1200);
 
-  console.log("[InstallUI] eligibility check:", snap);
-
-  // Never show if installed or dismissed for this page session
-  if (install.isInstalled || install.isDismissed) return;
-
-  const t = window.setTimeout(() => {
-    console.log("[InstallUI] opening modal now");
-    setInstallOpen(true);
-  }, 1200);
-
-  return () => window.clearTimeout(t);
-}, [
-  uid,
-  install.isInstalled,
-  install.isDismissed,
-  install.canPromptNative,
-  install.shouldShowIosHowTo,
-  install.device.os,
-  install.device.browser,
-  install.device.isStandalone,
-]);
+    return () => window.clearTimeout(t);
+  }, [uid, install.isInstalled, install.isDismissed]);
 
 
   const nowHMUser = useMemo(() => {
@@ -498,56 +463,6 @@ useEffect(() => {
     return isWithinQuietHours(nowHMUser, quietStart, quietEnd);
   }, [quietEnabled, quietStart, quietEnd, nowHMUser]);
 
-  function readDebugSnapshot() {
-    if (typeof window === "undefined") return {};
-    const navAny: any = navigator as any;
-    return {
-      time: new Date().toISOString(),
-      notifSupported,
-      notifPermission: notifSupported ? Notification.permission : "unsupported",
-      hookPermission: permission ?? null,
-      secureContext,
-      protocol: window.location?.protocol,
-      hostname: window.location?.hostname,
-      userAgent: navigator.userAgent,
-      visibilityState: document.visibilityState,
-      displayModeStandalone:
-        (window.matchMedia && window.matchMedia("(display-mode: standalone)").matches) || false,
-      navigatorStandalone: Boolean(navAny.standalone),
-      swController: Boolean(navigator.serviceWorker?.controller),
-      globalRemindersEnabled: globalEnabled,
-      tokenCount: tokenSnap.count,
-      lastReminderLog:
-        lastLog.status === "ok" ? lastLog.text : lastLog.status === "error" ? lastLog.text : lastLog.status,
-      userTz,
-      deviceTz,
-      tzMode,
-      tzSelect,
-      tzCustom,
-      tzDirty,
-      nowHMUser,
-      quietEnabled,
-      quietStart,
-      quietEnd,
-      quietActiveNow,
-
-//
-deviceOS: device.os,
-deviceBrowser: device.browser,
-deviceDesktopPlatform: device.desktopPlatform,
-deviceStandalone: device.isStandalone,
-deviceDisplayMode: device.displayMode,
-deviceCanInstallPrompt: device.canShowInstallPrompt,
-installMode: install.mode,
-installMethod: install.method,
-
-//
-
-    };
-  }
-
-  const device = useDevice();
-
   useEffect(() => {
     if (!mobileMenuOpen) return;
 
@@ -561,22 +476,6 @@ installMethod: install.method,
     document.addEventListener("pointerdown", onPointerDown);
     return () => document.removeEventListener("pointerdown", onPointerDown);
   }, [mobileMenuOpen]);
-
-  useEffect(() => {
-    if (!debugOn) return;
-
-    console.log("[Dashboard][DEBUG] mounted");
-    console.log("[Dashboard][DEBUG] initial snapshot:", readDebugSnapshot());
-
-    const id = window.setInterval(() => {
-      const snap = readDebugSnapshot();
-      console.log("[Dashboard][DEBUG] poll snapshot:", snap);
-      setDebugSnap(snap);
-    }, 2000);
-
-    return () => window.clearInterval(id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [debugOn]);
 
   useEffect(() => {
     let cancelled = false;
@@ -600,9 +499,7 @@ installMethod: install.method,
         } catch {
           // ignore
         }
-      } catch (e) {
-        console.log("[Dashboard] restore push error:", e);
-      }
+      } catch {}
     }
 
     run();
@@ -653,7 +550,6 @@ installMethod: install.method,
         setQuietEnd(qEnd);
         setQuietDirty(false);
       } catch (e) {
-        console.log("[Dashboard] ensure/load user doc error:", e);
         if (!cancelled) {
           setGlobalEnabled(true);
           setUserTz(deviceTz);
@@ -695,7 +591,6 @@ installMethod: install.method,
         const n = agg.data().count ?? 0;
         setTokenSnap({ count: n, status: "ok" });
       } catch (e) {
-        console.log("[Dashboard] token snapshot error:", e);
         if (!cancelled) setTokenSnap({ count: null, status: "error" });
       }
     }
@@ -740,9 +635,6 @@ installMethod: install.method,
   }, [uid]);
 
   async function enableNotificationsClick() {
-    console.log("[Dashboard] EnableNotifications clicked");
-    console.log("[Dashboard] before:", readDebugSnapshot());
-
     if (!notifSupported) {
       setPushUi({ status: "error", msg: "Notifications API unsupported in this browser." });
       return;
@@ -757,9 +649,6 @@ installMethod: install.method,
 
     try {
       const res: any = await enablePushForUser(uid);
-
-      console.log("[Dashboard] enablePushForUser result:", res);
-      console.log("[Dashboard] after:", readDebugSnapshot());
 
       if (res.ok) {
         if (res.changed === false) {
@@ -796,7 +685,6 @@ installMethod: install.method,
         setPushUi({ status: "error", msg });
       }
     } catch (e: any) {
-      console.log("[Dashboard] enable push error:", e);
       setPushUi({ status: "error", msg: e?.message ? String(e.message) : "Enable push failed." });
     }
   }
@@ -814,7 +702,6 @@ installMethod: install.method,
         msg: next ? "Global reminders ON ✅" : "Global reminders OFF ✅ (no notifications will be sent)",
       });
     } catch (e: any) {
-      console.log("[Dashboard] set remindersEnabled error:", e);
       setGlobalUi({ status: "error", msg: e?.message ? String(e.message) : "Could not update reminder setting." });
     }
   }
@@ -843,7 +730,6 @@ installMethod: install.method,
         msg: quietEnabled ? `Quiet hours ON ✅ (${start}–${end})` : "Quiet hours OFF ✅",
       });
     } catch (e: any) {
-      console.log("[Dashboard] set quietHours error:", e);
       setQuietUi({ status: "error", msg: e?.message ? String(e.message) : "Could not update quiet hours." });
     }
   }
@@ -866,7 +752,6 @@ installMethod: install.method,
       setTzDirty(false);
       setTzUi({ status: "saved", msg: `Timezone saved ✅ (${candidate})` });
     } catch (e: any) {
-      console.log("[Dashboard] set timezone error:", e);
       setTzUi({ status: "error", msg: e?.message ? String(e.message) : "Could not update timezone." });
     }
   }
@@ -882,9 +767,6 @@ installMethod: install.method,
   // --------------------------
   // Next scheduled reminder (actual next push time)
   // --------------------------
-
-  // console.log("[NEXT_REMINDER_DEBUG] activeHabits", activeHabits);
-  // console.log("[NEXT_REMINDER_DEBUG] items", items);
 
   const nextReminder = useMemo(() => {
     const nowHM = nowHMUser;
@@ -1050,7 +932,6 @@ installMethod: install.method,
         setStreakByHabitId(streakMap);
         setBestCurrentStreak(best);
       } catch (e) {
-        console.log("[Dashboard] insights error:", e);
         if (!cancelled) {
           setBestCurrentStreak(null);
           setConsistency7d("—");
@@ -1747,25 +1628,7 @@ installMethod: install.method,
           ) : null}
         </DarkCard>
 
-        {/* Debug panel */}
-        {debugOn ? (
-          <div className="mt-5 mb-6 rounded-2xl border border-white/14 bg-white/[0.07] p-4 text-xs text-white/75 backdrop-blur-2xl">
-            <div className="font-semibold text-white/85">DEBUG</div>
-            <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-3">
-              {Object.entries(debugSnap).map(([k, v]) => (
-                <div key={k} className="rounded-xl border border-white/10 bg-black/10 p-4">
-                  <div className="text-white/55">{k}</div>
-                  <div className="mt-1 break-all text-white/85">{String(v)}</div>
-                </div>
-              ))}
-            </div>
-            <div className="mt-3 text-white/45">
-              Tip: open DevTools Console and search for <span className="text-white/70">[Dashboard]</span>.
-            </div>
-          </div>
-        ) : (
-          <div className="mt-5" />
-        )}
+        <div className="mt-5" />
       </div>
 
     </Scene>
@@ -1777,19 +1640,15 @@ installMethod: install.method,
       method={install.method}
       installing={installing}
       onClose={() => {
-        console.log("[InstallUI] onClose");
         setInstallOpen(false);
-        install.dismiss(); // keep your current behavior for now
+        install.dismiss();
       }}
       onInstall={
         install.canPromptNative
           ? async () => {
-              console.log("[InstallUI] onInstall click");
               setInstalling(true);
               const res = await install.promptInstall();
               setInstalling(false);
-
-              console.log("[InstallUI] promptInstall result:", res);
 
               if (res !== "accepted") {
                 install.dismiss();

@@ -20,15 +20,7 @@ import { clearCheckin, getDoneMapForRange, setCheckin } from "../firebase/checki
 import { setHabitSchedule, type HabitScheduleType, type HabitReminder } from "../firebase/schedules";
 import { dateKeyFromDate, lastNDaysKeys, weekday1to7 } from "../utils/dateKey";
 import { getDayEligibility } from "../utils/eligibility";
-
-function initials(email?: string | null) {
-  if (!email) return "U";
-  const name = email.split("@")[0] || "user";
-  const parts = name.split(/[._-]/g).filter(Boolean);
-  const a = parts[0]?.[0] ?? "U";
-  const b = parts[1]?.[0] ?? "";
-  return (a + b).toUpperCase();
-}
+import { UserAvatar } from "../components/UserIdentity";
 
 function DarkCard({
   title,
@@ -662,15 +654,7 @@ useEffect(() => {
         {/* Header */}
         <div className="flex items-center justify-between gap-3 mb-6">
           <div className="flex items-center gap-3">
-            <div
-              className="h-10 w-10 rounded-2xl border border-white/14
-                         bg-gradient-to-b from-white/[0.14] to-white/[0.06]
-                         backdrop-blur-2xl
-                         flex items-center justify-center text-sm font-semibold text-white/92
-                         shadow-[0_24px_70px_-55px_rgba(0,0,0,0.98)]"
-            >
-              {initials(user?.email)}
-            </div>
+            <UserAvatar user={user} />
 
             <div>
               <div className="mb-1 inline-flex items-center gap-2 rounded-full border border-white/14 bg-white/[0.07] px-3 py-1 text-[11px] text-white/80 backdrop-blur-2xl">

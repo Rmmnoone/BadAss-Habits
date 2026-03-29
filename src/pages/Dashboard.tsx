@@ -22,6 +22,7 @@ import { ensureUserDoc, setUserRemindersEnabled, setUserQuietHours, setUserTimez
 import { collection, getCountFromServer, getDoc, doc, query, orderBy, limit, getDocs } from "firebase/firestore";
 import InstallPromptModal from "../components/InstallPromptModal";
 import { useInstallPrompt } from "../hooks/useInstallPrompt";
+import { UserAvatar, getUserHeaderName, isGoogleUser } from "../components/UserIdentity";
 
 //
 const tileClass =
@@ -31,15 +32,6 @@ const toneTileClass =
   "rounded-xl border p-4 backdrop-blur-2xl shadow-[0_20px_60px_-50px_rgba(0,0,0,0.98)]";
 
 //
-
-function initials(email?: string | null) {
-  if (!email) return "U";
-  const name = email.split("@")[0] || "user";
-  const parts = name.split(/[._-]/g).filter(Boolean);
-  const a = parts[0]?.[0] ?? "U";
-  const b = parts[1]?.[0] ?? "";
-  return (a + b).toUpperCase();
-}
 
 function DarkCard({
   title,
@@ -1007,15 +999,7 @@ export default function Dashboard() {
         {/* Header */}
         <div className="flex items-center justify-between gap-3 mb-5">
           <div className="flex items-center gap-3 min-w-0">
-            <div
-              className="h-10 w-10 rounded-2xl border border-white/14
-                         bg-gradient-to-b from-white/[0.14] to-white/[0.06]
-                         backdrop-blur-2xl
-                         flex items-center justify-center text-sm font-semibold text-white/92
-                         shadow-[0_24px_70px_-55px_rgba(0,0,0,0.98)]"
-            >
-              {initials(user?.email)}
-            </div>
+            <UserAvatar user={user} />
 
             <div className="min-w-0">
               <div className="mb-1 inline-flex items-center gap-3 rounded-full border border-white/14 bg-white/[0.07] px-3 py-1 text-[11px] text-white/80 backdrop-blur-2xl">
@@ -1025,7 +1009,13 @@ export default function Dashboard() {
 
               <div className="text-sm font-semibold text-white">Dashboard</div>
               <div className="text-xs text-white/60 truncate">
-                Signed in as <span className="font-medium text-white/80">{user?.email}</span>
+                {isGoogleUser(user) ? (
+                  <span className="font-medium text-white/80">{getUserHeaderName(user)}</span>
+                ) : (
+                  <>
+                    Signed in as <span className="font-medium text-white/80">{user?.email}</span>
+                  </>
+                )}
               </div>
             </div>
           </div>

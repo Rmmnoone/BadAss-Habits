@@ -130,6 +130,38 @@ export async function setUserTimezone(db: Firestore, uid: string, timezone: stri
   });
 }
 
+export async function setUserNames(
+  db: Firestore,
+  uid: string,
+  args: { firstName: string; lastName: string; email?: string | null }
+) {
+  const ref = doc(db, "users", uid);
+  const snap = await getDoc(ref);
+
+  const payload = {
+    uid,
+    email: args.email ?? null,
+    firstName: args.firstName.trim(),
+    lastName: args.lastName.trim(),
+    timezone: getTimezone(),
+    remindersEnabled: true,
+    quietHours: defaultQuietHours(),
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  };
+
+  if (!snap.exists()) {
+    await setDoc(ref, payload, { merge: true });
+    return;
+  }
+
+  await updateDoc(ref, {
+    firstName: args.firstName.trim(),
+    lastName: args.lastName.trim(),
+    updatedAt: serverTimestamp(),
+  });
+}
+
 // ==========================
 // End of Version 4 — src/firebase/users.ts
 // ==========================

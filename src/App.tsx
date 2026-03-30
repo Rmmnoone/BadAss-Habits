@@ -16,6 +16,7 @@ import Dashboard from "./pages/Dashboard";
 import Habits from "./pages/Habits";
 import History from "./pages/History";
 import HabitDetails from "./pages/HabitDetails";
+import Profile from "./pages/Profile";
 import Admin from "./pages/Admin";
 
 // ... (WaveLayer + NotFound unchanged)
@@ -228,6 +229,15 @@ export default function App() {
             element={
               <ProtectedRoute>
                 <History />
+              </ProtectedRoute>
+            }
+          />
+
+          <Route
+            path="/profile"
+            element={
+              <ProtectedRoute>
+                <Profile />
               </ProtectedRoute>
             }
           />

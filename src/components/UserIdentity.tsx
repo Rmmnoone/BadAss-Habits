@@ -15,7 +15,7 @@ export function isGoogleUser(user?: User | null) {
 }
 
 export function getUserHeaderName(user?: User | null) {
-  if (isGoogleUser(user) && user?.displayName) return user.displayName;
+  if (user?.displayName) return user.displayName;
   return user?.email ?? "";
 }
 

@@ -22,7 +22,7 @@ import { ensureUserDoc, setUserRemindersEnabled, setUserQuietHours, setUserTimez
 import { collection, getCountFromServer, getDoc, doc, query, orderBy, limit, getDocs } from "firebase/firestore";
 import InstallPromptModal from "../components/InstallPromptModal";
 import { useInstallPrompt } from "../hooks/useInstallPrompt";
-import { UserAvatar, getUserHeaderName, isGoogleUser } from "../components/UserIdentity";
+import { UserAvatar, getUserHeaderName } from "../components/UserIdentity";
 
 //
 const tileClass =
@@ -1009,7 +1009,7 @@ export default function Dashboard() {
 
               <div className="text-sm font-semibold text-white">Dashboard</div>
               <div className="text-xs text-white/60 truncate">
-                {isGoogleUser(user) ? (
+                {user?.displayName ? (
                   <span className="font-medium text-white/80">{getUserHeaderName(user)}</span>
                 ) : (
                   <>
@@ -1038,6 +1038,15 @@ export default function Dashboard() {
                hover:from-white/[0.16] hover:to-white/[0.07] transition"
             >
               History
+            </Link>
+
+            <Link
+              to="/profile"
+              className="rounded-xl border border-white/14 bg-gradient-to-b from-white/[0.12] to-white/[0.05]
+               backdrop-blur-2xl px-4 py-2 text-sm font-semibold text-white/90
+               hover:from-white/[0.16] hover:to-white/[0.07] transition"
+            >
+              Profile
             </Link>
 
             <button
@@ -1080,6 +1089,13 @@ export default function Dashboard() {
                     className="block px-4 py-3 text-sm text-white/90 hover:bg-white/[0.08]"
                   >
                     History
+                  </Link>
+                  <Link
+                    to="/profile"
+                    onClick={() => setMobileMenuOpen(false)}
+                    className="block px-4 py-3 text-sm text-white/90 hover:bg-white/[0.08]"
+                  >
+                    Profile
                   </Link>
                   <button
                     onClick={() => {

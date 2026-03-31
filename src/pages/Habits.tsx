@@ -24,11 +24,13 @@ function GlassCard({
   subtitle,
   right,
   children,
+  allowOverflow,
 }: {
   title: string;
   subtitle?: string;
   right?: React.ReactNode;
   children: React.ReactNode;
+  allowOverflow?: boolean;
 }) {
   return (
     <div className="relative group rounded-2xl">
@@ -42,7 +44,8 @@ function GlassCard({
                    bg-gradient-to-b from-white/[0.10] to-white/[0.04]
                    backdrop-blur-2xl
                    shadow-[0_44px_110px_-70px_rgba(0,0,0,0.98)]
-                   overflow-hidden"
+                   "
+        style={{ overflow: allowOverflow ? "visible" : "hidden" }}
       >
         <div className="pointer-events-none absolute inset-0">
           <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(255,255,255,0.12),transparent_35%,transparent_70%,rgba(0,0,0,0.22))]" />
@@ -401,6 +404,7 @@ export default function Habits() {
 
   const [name, setName] = useState("");
   const [category, setCategory] = useState<HabitCategory>("Others");
+  const [categoryOpen, setCategoryOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -411,6 +415,7 @@ export default function Habits() {
 //--------------------------------------------------------//
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const menuRef = React.useRef<HTMLDivElement | null>(null);
+  const categoryRef = React.useRef<HTMLDivElement | null>(null);
 
   React.useEffect(() => {
     function onDocClick(e: MouseEvent) {
@@ -426,6 +431,20 @@ export default function Habits() {
     document.addEventListener("mousedown", onDocClick, true);
     return () => document.removeEventListener("mousedown", onDocClick, true);
   }, [mobileMenuOpen]);
+
+  React.useEffect(() => {
+    function onDocDown(e: MouseEvent) {
+      if (!categoryOpen) return;
+      const el = categoryRef.current;
+      if (!el) return;
+      if (e.target instanceof Node && !el.contains(e.target)) {
+        setCategoryOpen(false);
+      }
+    }
+
+    document.addEventListener("mousedown", onDocDown, true);
+    return () => document.removeEventListener("mousedown", onDocDown, true);
+  }, [categoryOpen]);
 
 //--------------------------------------------------------//
   
@@ -637,9 +656,11 @@ export default function Habits() {
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-5">
+          <div className={`relative ${categoryOpen ? "z-30" : "z-0"}`}>
           <GlassCard
             title="Create habit"
             subtitle="Add a habit you want to track daily/weekly."
+            allowOverflow
           >
             <form onSubmit={onCreate} className="space-y-3">
               <div>
@@ -657,18 +678,44 @@ export default function Habits() {
 
               <div>
                 <label className="block text-xs font-medium text-white/70 mb-2">Category</label>
-                <select
-                  value={category}
-                  onChange={(e) => setCategory(normalizeHabitCategory(e.target.value))}
-                  className="w-full rounded-xl border border-white/14 bg-white/[0.08] px-4 py-3 text-sm text-white outline-none
-                             focus:border-white/22 focus:ring-4 focus:ring-white/10"
-                >
-                  {HABIT_CATEGORIES.map((x) => (
-                    <option key={x} value={x} className="bg-[#201734] text-white">
-                      {x}
-                    </option>
-                  ))}
-                </select>
+                <div ref={categoryRef} className="relative z-40">
+                  <button
+                    type="button"
+                    onClick={() => setCategoryOpen((v) => !v)}
+                    className="relative w-full rounded-xl border border-white/14 bg-white/[0.08] px-4 py-3 pr-12 text-left text-sm text-white outline-none
+                               focus:border-white/22 focus:ring-4 focus:ring-white/10"
+                  >
+                    <span>{category}</span>
+                    <span className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2 text-white/80">
+                      ▾
+                    </span>
+                  </button>
+
+                  {categoryOpen && (
+                    <div className="absolute left-0 right-0 top-[calc(100%+6px)] z-30 overflow-hidden rounded-xl border border-white/14 bg-[#201734] shadow-[0_28px_80px_-60px_rgba(0,0,0,0.98)]">
+                      {HABIT_CATEGORIES.map((x) => {
+                        const activeOption = category === x;
+                        return (
+                          <button
+                            key={x}
+                            type="button"
+                            onClick={() => {
+                              setCategory(x);
+                              setCategoryOpen(false);
+                            }}
+                            className={`block w-full px-4 py-3 text-left text-sm transition ${
+                              activeOption
+                                ? "bg-white/[0.10] text-white"
+                                : "text-white/90 hover:bg-white/[0.08]"
+                            }`}
+                          >
+                            {x}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
                 <div className="mt-2 text-xs text-white/45">Used for habit grouping and future reporting.</div>
               </div>
 
@@ -689,6 +736,7 @@ export default function Habits() {
               </button>
             </form>
           </GlassCard>
+          </div>
 
           <GlassCard title="Your habits" subtitle="View, rename, schedule, or archive.">
             {loading ? (
@@ -735,13 +783,13 @@ export default function Habits() {
                             </div>
                           </div>
 
-                          <div className="flex flex-wrap items-center gap-2 sm:justify-end">
+                          <div className="flex flex-wrap items-center justify-end gap-2">
                             {duePill(dueToday)}
                             {categoryPill(categoryLabel)}
                             {reminderPill(h?.reminders)}
                           </div>
 
-                          <div className="flex flex-wrap gap-2 sm:justify-end">
+                          <div className="flex flex-wrap items-center justify-end gap-2">
                             <button
                               onClick={() => onChangeCategory(h.id, h.category)}
                               className="rounded-lg border border-white/14 bg-white/[0.08]

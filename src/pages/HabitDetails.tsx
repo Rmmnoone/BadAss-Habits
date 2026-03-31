@@ -678,7 +678,6 @@ useEffect(() => {
                 <div className="mt-1 text-[11px] text-white/40">Earliest day: {minDateKey}</div>
               ) : null}
 
-              {habit ? <div className="mt-2">{categoryPill((habit as any)?.category)}</div> : null}
             </div>
           </div>
 

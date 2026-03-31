@@ -21,6 +21,7 @@ import { setHabitSchedule, type HabitScheduleType, type HabitReminder } from "..
 import { dateKeyFromDate, lastNDaysKeys, weekday1to7 } from "../utils/dateKey";
 import { getDayEligibility } from "../utils/eligibility";
 import { UserAvatar } from "../components/UserIdentity";
+import { normalizeHabitCategory } from "../utils/habitCategory";
 
 function DarkCard({
   title,
@@ -154,6 +155,14 @@ function reminderPill(reminders?: any) {
   return (
     <span className="inline-flex items-center gap-1 rounded-full border border-white/18 bg-white/[0.07] px-2.5 py-1 text-[11px] text-white/80">
       <span aria-hidden>⏰</span> {time || "On"}
+    </span>
+  );
+}
+
+function categoryPill(category?: string) {
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full border border-white/14 bg-white/[0.06] px-2.5 py-1 text-[11px] text-white/70">
+      {normalizeHabitCategory(category)}
     </span>
   );
 }
@@ -668,6 +677,8 @@ useEffect(() => {
               {minDateKey ? (
                 <div className="mt-1 text-[11px] text-white/40">Earliest day: {minDateKey}</div>
               ) : null}
+
+              {habit ? <div className="mt-2">{categoryPill((habit as any)?.category)}</div> : null}
             </div>
           </div>
 
@@ -819,6 +830,7 @@ useEffect(() => {
               </div>
             ) : (
               <div className="flex flex-wrap items-center gap-2">
+                {categoryPill((habit as any)?.category)}
                 <span className="inline-flex items-center rounded-full border border-white/12 bg-white/[0.04] px-2.5 py-1 text-[11px] text-white/70">
                   {scheduleLoading ? "Schedule: loading…" : `Schedule: ${scheduleSummary(effectiveType, effectiveDays)}`}
                 </span>

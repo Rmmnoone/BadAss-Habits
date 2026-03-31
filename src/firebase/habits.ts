@@ -16,6 +16,7 @@ import {
   type Firestore,
 } from "firebase/firestore";
 import type { HabitDoc } from "../types/habit";
+import { normalizeHabitCategory, type HabitCategory } from "../utils/habitCategory";
 
 export function habitsCollection(db: Firestore, uid: string) {
   return collection(db, "users", uid, "habits");
@@ -31,9 +32,10 @@ function getTimezone(): string {
 }
 
 // Default schedule: daily at 09:00 (can be changed later in UI)
-function defaultHabitDoc(name: string): HabitDoc {
+function defaultHabitDoc(name: string, category: HabitCategory): HabitDoc {
   return {
     name,
+    category,
     isArchived: false,
     timezone: getTimezone(),
     schedule: {
@@ -51,9 +53,9 @@ function defaultHabitDoc(name: string): HabitDoc {
   };
 }
 
-export async function createHabit(db: Firestore, uid: string, name: string) {
+export async function createHabit(db: Firestore, uid: string, name: string, category: HabitCategory = "Others") {
   const col = habitsCollection(db, uid);
-  await addDoc(col, defaultHabitDoc(name));
+  await addDoc(col, defaultHabitDoc(name, normalizeHabitCategory(category)));
 }
 
 export async function renameHabit(db: Firestore, uid: string, habitId: string, name: string) {
@@ -65,6 +67,14 @@ export async function renameHabit(db: Firestore, uid: string, habitId: string, n
   } as any);
   // If you prefer strict server-only, replace above with:
   // await updateDoc(ref, { name, updatedAt: serverTimestamp() } as any);
+}
+
+export async function setHabitCategory(db: Firestore, uid: string, habitId: string, category: HabitCategory) {
+  const ref = doc(db, "users", uid, "habits", habitId);
+  await updateDoc(ref, {
+    category: normalizeHabitCategory(category),
+    updatedAt: Timestamp.now(),
+  } as any);
 }
 
 export async function archiveHabit(db: Firestore, uid: string, habitId: string) {

@@ -10,13 +10,14 @@ import React, { useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../auth/AuthProvider";
 import { db } from "../firebase/client";
-import { archiveHabit, createHabit, renameHabit, unarchiveHabit } from "../firebase/habits";
+import { archiveHabit, createHabit, renameHabit, setHabitCategory, unarchiveHabit } from "../firebase/habits";
 import { useHabits } from "../hooks/useHabits";
 import Scene from "../components/Scene";
 import { UserAvatar } from "../components/UserIdentity";
 
 import { setHabitSchedule, type HabitScheduleType, type HabitReminder } from "../firebase/schedules";
 import { useHabitSchedule } from "../hooks/useHabitSchedule";
+import { HABIT_CATEGORIES, normalizeHabitCategory, type HabitCategory } from "../utils/habitCategory";
 
 function GlassCard({
   title,
@@ -91,6 +92,14 @@ function reminderPill(reminders?: any) {
   return (
     <span className="inline-flex items-center gap-1 rounded-full border border-white/18 bg-white/[0.07] px-2.5 py-1 text-[11px] text-white/80">
       <span aria-hidden>⏰</span> {time || "On"}
+    </span>
+  );
+}
+
+function categoryPill(category?: string) {
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full border border-white/14 bg-white/[0.06] px-2.5 py-1 text-[11px] text-white/70">
+      {normalizeHabitCategory(category)}
     </span>
   );
 }
@@ -391,6 +400,7 @@ export default function Habits() {
   const { active, archived, loading } = useHabits(uid);
 
   const [name, setName] = useState("");
+  const [category, setCategory] = useState<HabitCategory>("Others");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -440,8 +450,9 @@ export default function Habits() {
     setError(null);
     setSaving(true);
     try {
-      await createHabit(db, uid, name.trim());
+      await createHabit(db, uid, name.trim(), category);
       setName("");
+      setCategory("Others");
     } catch (err: any) {
       setError(`Could not create habit. ${err?.message ? `(${err.message})` : "Try again."}`);
     } finally {
@@ -454,6 +465,16 @@ export default function Habits() {
     const next = window.prompt("Rename habit:", currentName);
     if (!next || next.trim().length < 2) return;
     await renameHabit(db, uid, habitId, next.trim());
+  }
+
+  async function onChangeCategory(habitId: string, currentCategory?: string) {
+    if (!uid) return;
+    const next = window.prompt(
+      `Set category:\n${HABIT_CATEGORIES.join(", ")}`,
+      normalizeHabitCategory(currentCategory)
+    );
+    if (!next) return;
+    await setHabitCategory(db, uid, habitId, normalizeHabitCategory(next));
   }
 
   async function onArchive(habitId: string) {
@@ -619,11 +640,6 @@ export default function Habits() {
           <GlassCard
             title="Create habit"
             subtitle="Add a habit you want to track daily/weekly."
-            right={
-              <span className="inline-flex items-center rounded-full border border-white/14 bg-white/[0.07] px-3 py-1 text-xs text-white/75 backdrop-blur-2xl">
-                MVP
-              </span>
-            }
           >
             <form onSubmit={onCreate} className="space-y-3">
               <div>
@@ -637,6 +653,23 @@ export default function Habits() {
                   placeholder="e.g. Gym, Reading, Meditation"
                 />
                 <div className="mt-2 text-xs text-white/45">Tip: keep it short. You can rename later.</div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-white/70 mb-2">Category</label>
+                <select
+                  value={category}
+                  onChange={(e) => setCategory(normalizeHabitCategory(e.target.value))}
+                  className="w-full rounded-xl border border-white/14 bg-white/[0.08] px-4 py-3 text-sm text-white outline-none
+                             focus:border-white/22 focus:ring-4 focus:ring-white/10"
+                >
+                  {HABIT_CATEGORIES.map((x) => (
+                    <option key={x} value={x} className="bg-[#201734] text-white">
+                      {x}
+                    </option>
+                  ))}
+                </select>
+                <div className="mt-2 text-xs text-white/45">Used for habit grouping and future reporting.</div>
               </div>
 
               {error ? (
@@ -669,6 +702,7 @@ export default function Habits() {
                     const sType: HabitScheduleType = h?.schedule?.type ?? "daily";
                     const sDays: number[] = h?.schedule?.daysOfWeek ?? [];
                     const sched = scheduleSummary(sType, sDays);
+                    const categoryLabel = normalizeHabitCategory(h?.category);
 
                     const dueToday = isDueTodayLocal(h, weekdayLocal);
 
@@ -680,65 +714,80 @@ export default function Habits() {
                       >
                         
 
-                        <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
-  <div className="min-w-0">
-    <Link
-      to={`/habits/${h.id}`}
-      className="text-sm font-semibold text-white truncate hover:underline underline-offset-4 block"
-      title="Open habit details"
-    >
-      {h.name}
-    </Link>
+                        <div className="space-y-3">
+                          <div className="flex items-start justify-between gap-3">
+                            <Link
+                              to={`/habits/${h.id}`}
+                              className="min-w-0 text-sm font-semibold text-white truncate hover:underline underline-offset-4 block"
+                              title="Open habit details"
+                            >
+                              {h.name}
+                            </Link>
 
-    <div className="mt-2 flex flex-wrap items-center gap-2">
-      <span className="text-xs text-white/60">Active</span>
-      {duePill(dueToday)}
-      {reminderPill(h?.reminders)}
-    </div>
+                            <div className="shrink-0 text-right">
+                              <div className="text-xs text-white/45">
+                                <span className="text-white/60">Active</span>
+                                <span className="mx-2 text-white/25">•</span>
+                                <span>
+                                  Schedule: <span className="text-white/70">{sched}</span>
+                                </span>
+                              </div>
+                            </div>
+                          </div>
 
-    <div className="mt-2 text-xs text-white/45">
-      Schedule: <span className="text-white/70">{sched}</span>
-    </div>
-  </div>
+                          <div className="flex flex-wrap items-center gap-2 sm:justify-end">
+                            {duePill(dueToday)}
+                            {categoryPill(categoryLabel)}
+                            {reminderPill(h?.reminders)}
+                          </div>
 
-  <div className="flex flex-wrap gap-2 sm:justify-end sm:shrink-0">
-    <Link
-      to={`/habits/${h.id}`}
-      className="rounded-lg border border-white/14 bg-white/[0.10]
-                 px-3 py-2 text-[11px] font-semibold text-white/90 hover:bg-white/[0.14]
-                 whitespace-nowrap"
-    >
-      View
-    </Link>
+                          <div className="flex flex-wrap gap-2 sm:justify-end">
+                            <button
+                              onClick={() => onChangeCategory(h.id, h.category)}
+                              className="rounded-lg border border-white/14 bg-white/[0.08]
+                                         px-3 py-2 text-[11px] font-semibold text-white/85 hover:bg-white/[0.12]
+                                         whitespace-nowrap"
+                            >
+                              Category
+                            </button>
 
-    <button
-      onClick={() => openSchedule(h.id, h.name)}
-      className="rounded-lg border border-white/14 bg-white/[0.08]
-                 px-3 py-2 text-[11px] font-semibold text-white/85 hover:bg-white/[0.12]
-                 whitespace-nowrap"
-    >
-      Schedule
-    </button>
+                            <Link
+                              to={`/habits/${h.id}`}
+                              className="rounded-lg border border-white/14 bg-white/[0.10]
+                                         px-3 py-2 text-[11px] font-semibold text-white/90 hover:bg-white/[0.14]
+                                         whitespace-nowrap"
+                            >
+                              View
+                            </Link>
 
-    <button
-      onClick={() => onRename(h.id, h.name)}
-      className="rounded-lg border border-white/14 bg-white/[0.08]
-                 px-3 py-2 text-[11px] font-semibold text-white/85 hover:bg-white/[0.12]
-                 whitespace-nowrap"
-    >
-      Rename
-    </button>
+                            <button
+                              onClick={() => openSchedule(h.id, h.name)}
+                              className="rounded-lg border border-white/14 bg-white/[0.08]
+                                         px-3 py-2 text-[11px] font-semibold text-white/85 hover:bg-white/[0.12]
+                                         whitespace-nowrap"
+                            >
+                              Schedule
+                            </button>
 
-    <button
-      onClick={() => onArchive(h.id)}
-      className="rounded-lg border border-white/14 bg-white/[0.08]
-                 px-3 py-2 text-[11px] font-semibold text-white/85 hover:bg-white/[0.12]
-                 whitespace-nowrap"
-    >
-      Archive
-    </button>
-  </div>
-</div>
+                            <button
+                              onClick={() => onRename(h.id, h.name)}
+                              className="rounded-lg border border-white/14 bg-white/[0.08]
+                                         px-3 py-2 text-[11px] font-semibold text-white/85 hover:bg-white/[0.12]
+                                         whitespace-nowrap"
+                            >
+                              Rename
+                            </button>
+
+                            <button
+                              onClick={() => onArchive(h.id)}
+                              className="rounded-lg border border-white/14 bg-white/[0.08]
+                                         px-3 py-2 text-[11px] font-semibold text-white/85 hover:bg-white/[0.12]
+                                         whitespace-nowrap"
+                            >
+                              Archive
+                            </button>
+                          </div>
+                        </div>
 
 
 
@@ -766,7 +815,10 @@ export default function Habits() {
                             >
                               {h.name}
                             </Link>
-                            <div className="text-xs text-white/50">Archived</div>
+                            <div className="mt-1 flex flex-wrap items-center gap-2">
+                              <div className="text-xs text-white/50">Archived</div>
+                              {categoryPill(h?.category)}
+                            </div>
                           </div>
 
                           <div className="flex items-center gap-2">

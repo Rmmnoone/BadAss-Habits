@@ -5,6 +5,7 @@
 // - Keeps backward compatibility for schedule.times etc.
 // ==========================
 import type { Timestamp } from "firebase/firestore";
+import type { HabitCategory } from "../utils/habitCategory";
 
 export type HabitScheduleType = "daily" | "weekly";
 
@@ -27,6 +28,7 @@ export type HabitSchedule = {
 export type Habit = {
   id: string;
   name: string;
+  category?: HabitCategory;
   isArchived: boolean;
 
   schedule?: HabitSchedule;

@@ -186,34 +186,42 @@ function HeatDot({ cell, outOfMonth }: { cell: Cell | null; outOfMonth?: boolean
 
   const fillByIntensity: Record<0 | 1 | 2 | 3 | 4, string> = {
     0: "bg-white/[0.035]",
-    1: "bg-fuchsia-500/10",
-    2: "bg-fuchsia-500/18",
-    3: "bg-fuchsia-500/32",
-    4: "bg-fuchsia-500/55",
+    1: "bg-fuchsia-500/[0.14]",
+    2: "bg-fuchsia-500/[0.28]",
+    3: "bg-fuchsia-500/[0.42]",
+    4: "bg-fuchsia-500/[0.62]",
   };
 
   const glowByIntensity: Record<0 | 1 | 2 | 3 | 4, string> = {
     0: "",
-    1: "shadow-[0_0_18px_rgba(236,72,153,0.10)]",
-    2: "shadow-[0_0_26px_rgba(236,72,153,0.20)]",
-    3: "shadow-[0_0_40px_rgba(236,72,153,0.35)]",
-    4: "shadow-[0_0_70px_rgba(236,72,153,0.70)]",
+    1: "shadow-[0_0_14px_rgba(236,72,153,0.10)]",
+    2: "shadow-[0_0_22px_rgba(236,72,153,0.18)]",
+    3: "shadow-[0_0_34px_rgba(236,72,153,0.28)]",
+    4: "shadow-[0_0_56px_rgba(236,72,153,0.50)]",
   };
 
   const ringByIntensity: Record<0 | 1 | 2 | 3 | 4, string> = {
     0: "",
     1: "",
     2: "",
-    3: "ring-1 ring-fuchsia-200/10",
-    4: "ring-2 ring-fuchsia-200/18",
+    3: "",
+    4: "",
   };
 
   const innerSheen =
     !disabled && intensity >= 3
-      ? "before:content-[''] before:absolute before:inset-0 before:rounded-full before:bg-[radial-gradient(circle_at_35%_30%,rgba(255,255,255,0.28),transparent_55%)] before:opacity-60"
+      ? "before:content-[''] before:absolute before:inset-0 before:rounded-full before:bg-[radial-gradient(circle_at_35%_30%,rgba(255,255,255,0.32),transparent_55%)] before:opacity-70"
       : "";
 
-  const border = disabled ? "border-white/10" : "border-white/14";
+  const borderByIntensity: Record<0 | 1 | 2 | 3 | 4, string> = {
+    0: "border-white/14",
+    1: "border-fuchsia-300/45",
+    2: "border-fuchsia-300/55",
+    3: "border-fuchsia-200/65",
+    4: "border-fuchsia-200/80",
+  };
+
+  const border = disabled ? "border-white/10" : borderByIntensity[intensity];
   const fill = fillByIntensity[intensity];
   const glow = glowByIntensity[intensity];
   const ring = ringByIntensity[intensity];
@@ -224,7 +232,7 @@ function HeatDot({ cell, outOfMonth }: { cell: Cell | null; outOfMonth?: boolean
     <div
       title={cell?.label ?? ""}
       className={`relative ${base} ${border} ${fill} ${glow} ${ring} ${opacity}
-                  ${!disabled ? "hover:bg-fuchsia-500/45" : ""}`}
+                  ${!disabled ? "hover:bg-fuchsia-500/[0.45]" : ""}`}
     >
       <div className={`absolute inset-0 rounded-full ${innerSheen}`} />
     </div>
@@ -664,7 +672,7 @@ export default function History() {
                                outline-none focus:border-white/22 focus:ring-4 focus:ring-white/10"
                       >
                         {(activeHabits as any[]).map((h) => (
-                          <option key={h.id} value={h.id}>
+                          <option key={h.id} value={h.id} className="bg-[#201734] text-white">
                             {h.name}
                           </option>
                         ))}

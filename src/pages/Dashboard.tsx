@@ -1151,12 +1151,20 @@ export default function Dashboard() {
 
               {loading ? (
                 <div className="text-sm text-white/70">Loading…</div>
-              ) : dueItems.length === 0 ? (
-                <div className="rounded-xl border border-dashed border-white/16 bg-black/10 px-4 py-5">
-                  <p className="text-sm text-white/70">No habits due today.</p>
-                  <p className="mt-2 text-xs text-white/50">If you haven’t set schedules yet, go to Habits → Schedule.</p>
-                </div>
-              ) : (
+                ) : dueItems.length === 0 ? (
+                  <div className="rounded-xl border border-dashed border-white/16 bg-black/10 px-4 py-5">
+                    <p className="text-sm text-white/70">No habits due today.</p>
+                    <div className="mt-2 flex flex-wrap items-center gap-3">
+                      <p className="text-xs text-white/50">If you haven’t set schedules yet, create one and set its schedule.</p>
+                      <Link
+                        to="/habits"
+                        className="inline-flex items-center rounded-lg border border-white/14 bg-white/[0.08] px-3 py-1.5 text-xs font-semibold text-white/85 hover:bg-white/[0.12]"
+                      >
+                        Go to Habits
+                      </Link>
+                    </div>
+                  </div>
+                ) : (
                 <div className="space-y-2">
                   {dueItems.map((h: any) => {
                     const isBusy = busyId === h.id;
